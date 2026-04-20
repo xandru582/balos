@@ -16,23 +16,8 @@ RUN pacman -Syu --noconfirm --needed \
     syslinux mtools dosfstools grub libisoburn \
     && pacman -Scc --noconfirm
 
-# ── Chaotic-AUR keyring + mirrorlist ──────────────────────────────
-# Try multiple keyservers; fall back to fetching mirrorlist file directly
-# so /etc/pacman.d/chaotic-mirrorlist is ALWAYS present (pacman.conf needs it).
-RUN pacman-key --init && \
-    ( pacman-key --recv-key 3056513887B78AEB --keyserver keyserver.ubuntu.com || \
-      pacman-key --recv-key 3056513887B78AEB --keyserver hkps://keys.openpgp.org || \
-      pacman-key --recv-key 3056513887B78AEB --keyserver hkps://keyserver.ubuntu.com:443 || \
-      true ) && \
-    pacman-key --lsign-key 3056513887B78AEB 2>/dev/null || true && \
-    ( pacman -U --noconfirm \
-        'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-keyring.pkg.tar.zst' \
-        'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-mirrorlist.pkg.tar.zst' || true ) && \
-    if [ ! -f /etc/pacman.d/chaotic-mirrorlist ]; then \
-        echo "Server = https://cdn-mirror.chaotic.cx/\$repo/\$arch" > /etc/pacman.d/chaotic-mirrorlist && \
-        echo "Server = https://builds.garudalinux.org/repos/chaotic-aur/\$arch" >> /etc/pacman.d/chaotic-mirrorlist ; \
-    fi && \
-    test -f /etc/pacman.d/chaotic-mirrorlist
+# ── Init pacman keyring (needed for BlackArch strap.sh below) ─────
+RUN pacman-key --init
 
 # ── BlackArch keyring + mirrorlist ────────────────────────────────
 # strap.sh creates /etc/pacman.d/blackarch-mirrorlist and imports the key.
