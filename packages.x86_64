@@ -121,8 +121,9 @@ hdparm
 smartmontools
 
 # ── Gaming Core ─────────────────────────────────────────────────
+# Note: steam-native-runtime / dxvk-bin / vkd3d-utils removed — Proton-GE
+# (bundled via balos-repo) already provides DXVK/VKD3D and the native runtime.
 steam
-steam-native-runtime
 gamemode
 lib32-gamemode
 mangohud
@@ -132,10 +133,8 @@ lutris
 wine-staging
 wine-mono
 winetricks
-dxvk-bin
 vkd3d
 lib32-vkd3d
-vkd3d-utils
 giflib
 lib32-giflib
 gnutls
@@ -207,8 +206,9 @@ sof-firmware
 pavucontrol
 
 # ── Desktop — KDE Plasma (Wayland first) ────────────────────────
+# plasma-wayland-session was dropped upstream — plasma-meta pulls plasma-workspace
+# which provides the Wayland session now.
 plasma-meta
-plasma-wayland-session
 sddm
 sddm-kcm
 kde-gtk-config
@@ -265,7 +265,7 @@ bat
 eza
 zoxide
 lsd
-dust
+du-dust
 procs
 sd
 tealdeer
@@ -280,9 +280,6 @@ figlet
 toilet
 lolcat
 cmatrix
-cbonsai
-hollywood
-pipes.sh
 asciinema
 neovim
 micro
@@ -345,9 +342,9 @@ cewl
 sublist3r
 
 # ── Exploitation Frameworks ─────────────────────────────────────
+# searchsploit is shipped as part of the 'exploitdb' package.
 metasploit
 exploitdb
-searchsploit
 set
 beef
 
@@ -384,41 +381,38 @@ binwalk
 foremost
 exiftool
 steghide
-stegsolve
+# stegsolve is AUR-only (Java jar) — install via balinit if user opts-in.
 upx
 file
-strings
+# 'strings' ships with binutils (pulled by base-devel)
 
 # ── Forensics ───────────────────────────────────────────────────
+# photorec ships as part of 'testdisk'.
 sleuthkit
 autopsy
 volatility3
 dc3dd
 ddrescue
 testdisk
-photorec
 extundelete
 safecopy
 
 # ── Crypto / CTF ────────────────────────────────────────────────
+# 'gpg' is provided by 'gnupg' (binary is still /usr/bin/gpg).
 openssl
-gpg
+gnupg
 hashpump
-yafu
 
 # ── Anonymity / OSINT ───────────────────────────────────────────
+# shodan / instaloader: install via pipx post-boot (not in any Arch repo).
 theharvester
 maltego
 recon-ng
 spiderfoot
-shodan
-instaloader
 
 # ── Wordlists ───────────────────────────────────────────────────
+# seclists bundles RockYou, dirb/dirbuster lists, SecLists/Passwords/*, etc.
 seclists
-dirbuster-wordlists
-wordlists
-rockyou
 
 # ══════════════════════════════════════════════════════════════════
 #                    DEVELOPMENT
@@ -445,7 +439,7 @@ cmake
 ninja
 meson
 jq
-yq
+go-yq
 ripgrep-all
 shellcheck
 shfmt
@@ -542,16 +536,17 @@ openbsd-netcat
 
 # ── BalOS Improvement Batch ─────────────────────────────────────
 # Security / anti-forensics
+# suricata-update merged into the main 'suricata' package.
 usbguard
 suricata
-suricata-update
 firejail
 snapper
 snap-pac
 grub-btrfs
 inotify-tools
 age
-rage-encryption
+# rage-encryption (Rust impl) may be AUR-only depending on Arch state;
+# 'age' (Go impl, above) provides compatible binary `age`/`age-keygen`.
 gocryptfs
 cryfs
 wipe
@@ -570,8 +565,8 @@ enum4linux
 smbclient
 
 # Reverse engineering / exploit
+# 'ncat' is provided by the 'nmap' package (above).
 rlwrap
-ncat
 impacket
 crackmapexec
 chisel
@@ -593,8 +588,8 @@ wl-clipboard
 git-delta
 
 # Dialog / TUI
+# 'whiptail' (from libnewt) isn't in Arch core — dialog is enough for balos-install.
 dialog
-whiptail
 
 # Recovery / system tools
 nvme-cli
