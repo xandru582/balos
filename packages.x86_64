@@ -17,6 +17,8 @@ mkinitcpio-archiso
 mkinitcpio-nfs-utils
 efibootmgr
 grub
+syslinux
+mtools
 os-prober
 edk2-shell
 memtest86+

@@ -3,9 +3,10 @@ FROM archlinux:latest
 # Enable multilib
 RUN echo -e "\n[multilib]\nInclude = /etc/pacman.d/mirrorlist" >> /etc/pacman.conf
 
-# Core update + build tools
+# Core update + build tools (include syslinux/grub/mtools for mkarchiso bootmodes)
 RUN pacman -Syu --noconfirm --needed \
     base-devel git archiso wget curl sudo python rsync \
+    syslinux mtools dosfstools grub libisoburn \
     && pacman -Scc --noconfirm
 
 # ── Chaotic-AUR keyring + mirrorlist ──────────────────────────────
