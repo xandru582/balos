@@ -1,0 +1,9 @@
+## BalOS sudoers — live user gets passwordless sudo (live ISO only).
+## The installer (balos-install) removes this file and replaces it with
+## a wheel-based rule requiring password.
+
+Defaults env_keep += "PATH TERM LANG LC_ALL"
+Defaults lecture = never
+
+## Live user — set by customize_airootfs.sh
+%wheel ALL=(ALL:ALL) NOPASSWD: ALL
