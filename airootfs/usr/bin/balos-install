@@ -354,6 +354,14 @@ mount -a
 
 # Override snapper configs with BalOS versions if shipped
 [[ -f /etc/snapper/configs/root-balos ]] && cp /etc/snapper/configs/root-balos /etc/snapper/configs/root
+
+# Install BalOS pacman hooks (snapper pre/post, bootbackup, grub-btrfs).
+# Shipped in /usr/share/balos/pacman-hooks/ so they DON'T fire during the
+# ISO build (no btrfs root then). Activate them on the installed system.
+if [[ -d /usr/share/balos/pacman-hooks ]]; then
+    mkdir -p /etc/pacman.d/hooks
+    cp /usr/share/balos/pacman-hooks/*.hook /etc/pacman.d/hooks/ 2>/dev/null || true
+fi
 CHROOT
 chmod +x /mnt/root/chroot-setup.sh
 arch-chroot /mnt /root/chroot-setup.sh 2>&1 | tee -a "$LOG"
