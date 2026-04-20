@@ -1,6 +1,7 @@
 # Build artifacts
 output/
 work/
+.build-work/
 *.iso
 *.iso.sig
 *.iso.sha256

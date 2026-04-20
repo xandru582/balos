@@ -4,6 +4,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUTPUT_DIR="${SCRIPT_DIR}/output"
+# mkarchiso's work dir can hit 25-30 GB (extracted rootfs + pacman cache
+# + squashfs staging). Keep it on the host fs (bind-mount) instead of
+# inside the container's overlay — the container layer is often size-
+# capped on Proxmox CT / Docker Desktop / etc.
+# Override with BALOS_WORK_DIR if you want it elsewhere (e.g. /var/balos-work).
+WORK_DIR="${BALOS_WORK_DIR:-${SCRIPT_DIR}/.build-work}"
 IMAGE_NAME="balos-builder"
 
 R='\033[0;31m'; G='\033[0;32m'; Y='\033[1;33m'; C='\033[0;36m'; M='\033[0;35m'
@@ -33,7 +39,18 @@ banner
 command -v docker &>/dev/null || die "Docker required. Install Docker Desktop."
 docker info &>/dev/null       || die "Docker daemon not running — start Docker Desktop."
 
-mkdir -p "${OUTPUT_DIR}"
+mkdir -p "${OUTPUT_DIR}" "${WORK_DIR}"
+
+# ── Disk-space preflight ──────────────────────────────────────────
+# mkarchiso fails obscurely when it runs out of space mid-pacstrap —
+# give a loud, early warning instead.
+AVAIL_GB=$(df --output=avail -BG "${WORK_DIR}" 2>/dev/null | tail -1 | tr -dc '0-9' || echo 0)
+if [[ -n "${AVAIL_GB}" && "${AVAIL_GB}" -lt 30 ]]; then
+    warn "Only ${AVAIL_GB} GB free on $(df "${WORK_DIR}" | tail -1 | awk '{print $NF}')."
+    warn "The build needs ~30 GB. Set BALOS_WORK_DIR=/path/with/space or make room."
+    warn "Continuing anyway — ctrl-c now if you want to abort."
+    sleep 3
+fi
 
 # ── Flags ─────────────────────────────────────────────────────────
 CLEAN=false; NO_CACHE=false; KERNEL=false
@@ -61,6 +78,7 @@ done
 if $CLEAN; then
     step "Cleaning previous build..."
     rm -f "${OUTPUT_DIR}"/*.iso
+    rm -rf "${WORK_DIR:?}"/* 2>/dev/null || true
     docker rmi "${IMAGE_NAME}" 2>/dev/null || true
 fi
 
@@ -85,9 +103,13 @@ docker build ${PLATFORM_FLAG} $BOPTS -t "${IMAGE_NAME}" "${SCRIPT_DIR}"
 step "Forging BalOS ISO (20-40 min on native x86_64, up to 2h on emulated ARM)..."
 info "You can tail progress in another terminal with: docker logs -f \$(docker ps -q)"
 
+info "Work dir:   ${WORK_DIR}  (bind-mounted from host)"
+info "Output dir: ${OUTPUT_DIR}"
+
 # shellcheck disable=SC2086
 docker run --rm --privileged ${PLATFORM_FLAG} \
     -v "${OUTPUT_DIR}:/output" \
+    -v "${WORK_DIR}:/tmp/balos-work" \
     "${IMAGE_NAME}"
 
 # ── Verify result ────────────────────────────────────────────────
