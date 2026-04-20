@@ -69,7 +69,7 @@ interactive_menu() {
         --header="[ BalOS v${VERSION} — hack · play · evade · endure ]" \
         --color='fg:#b8ffce,bg:#020604,hl:#00ff88,fg+:#00ff88,bg+:#0a1810,hl+:#ffcc33,info:#b580ff,prompt:#00ff88,pointer:#ff3366,marker:#b580ff,spinner:#00ff88,header:#3a7040,border:#00ff88' \
         --preview='echo {} | cut -d"·" -f2- | head -c 200' \
-        --preview-window=bottom:3:wrap --tiebreak=begin | awk '{print $1}')
+        --preview-window=bottom:3:wrap --tiebreak=begin | awk '{print $1}'
 ⚡ boost         · Gaming mode — max CPU, turbo, low-lat audio
 🔋 saver         · Extreme battery — can double battery life
 ⚖  balance       · Balanced default profile

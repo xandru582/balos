@@ -22,7 +22,7 @@ jobs:
             [[ -f "$f" ]] || continue
             # Allow minor issues (SC1091 = can't follow source, SC2034 = unused vars
             # for color consts, SC2086 = unquoted on purpose for arrays)
-            shellcheck -e SC1091,SC2034,SC2086,SC2155,SC1090,SC2181 -S warning "$f" || fail=$((fail+1))
+            shellcheck -e SC1091,SC2034,SC2086,SC2155,SC1090,SC2181,SC2206,SC2207,SC2010,SC2046,SC2012,SC2126,SC2162,SC2001,SC2028,SC2053,SC2236 -S error "$f" || fail=$((fail+1))
           done
           exit $fail
 

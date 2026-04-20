@@ -308,7 +308,6 @@ mtr
 iperf3
 iperf
 netcat
-socat
 ncrack
 
 # ── Wireless / WiFi ─────────────────────────────────────────────
@@ -357,7 +356,6 @@ john
 hashcat
 hashcat-utils
 crunch
-cewl
 hashid
 hash-identifier
 
@@ -526,9 +524,7 @@ texinfo
 
 # Misc essential
 which
-file
 lsof
-strace
 usbutils
 pciutils
 dmidecode
@@ -565,28 +561,16 @@ yubikey-manager
 
 # Stealth / anon
 torsocks
-dnscrypt-proxy
-macchanger
 privoxy
 
 # Enumeration / recon
-theharvester
-sublist3r
-whatweb
-ffuf
-gobuster
-feroxbuster
-nuclei
-wpscan
 enum4linux
 smbclient
 
 # Reverse engineering / exploit
 rlwrap
-socat
 ncat
 impacket
-responder
 crackmapexec
 chisel
 ligolo-ng
@@ -604,20 +588,13 @@ slurp
 wl-clipboard
 
 # Editor stack
-neovim
-tmux
 git-delta
-lazygit
-ripgrep-all
 
 # Dialog / TUI
 dialog
 whiptail
 
 # Recovery / system tools
-ddrescue
-testdisk
-smartmontools
 nvme-cli
 stress-ng
 s-tui
@@ -628,5 +605,3 @@ dunst
 
 # Fonts / emoji (for waybar nerd font)
 otf-font-awesome
-ttf-jetbrains-mono-nerd
-ttf-firacode-nerd
