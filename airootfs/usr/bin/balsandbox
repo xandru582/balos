@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# balsandbox — run app in firejail with BalOS profiles
+# Works with or without a pre-made firejail profile
+set -euo pipefail
+
+G='\033[0;32m'; C='\033[0;36m'; Y='\033[1;33m'; R='\033[0;31m'; B='\033[1m'; N='\033[0m'
+
+usage() {
+cat << EOF
+${C}${B}balsandbox${N} — run app in firejail
+
+  balsandbox ${C}<app>${N}              Launch app with auto-profile
+  balsandbox ${C}--paranoid <app>${N}   Extra restrictions (no net, no dbus)
+  balsandbox ${C}--tor <app>${N}        Route app through Tor only
+  balsandbox ${C}--private <app>${N}    Use empty \$HOME (no persistence)
+  balsandbox ${C}--list${N}             List installed firejail profiles
+  balsandbox ${C}--status${N}           Show running sandboxes
+
+${B}COMMON APPS${N}
+  firefox, chromium, brave, thunderbird
+  steam (with --gaming flag for GPU)
+  discord, signal-desktop, telegram-desktop
+  burpsuite, zaproxy, metasploit
+EOF
+}
+
+command -v firejail &>/dev/null || { echo "install: sudo pacman -S firejail"; exit 1; }
+
+PARANOID=false
+TOR=false
+PRIVATE=false
+GAMING=false
+ARGS=()
+
+while (( $# )); do
+    case "$1" in
+        --paranoid) PARANOID=true; shift ;;
+        --tor)      TOR=true; shift ;;
+        --private)  PRIVATE=true; shift ;;
+        --gaming)   GAMING=true; shift ;;
+        --list)     firejail --list 2>/dev/null || ls /etc/firejail/*.profile 2>/dev/null; exit ;;
+        --status)   firejail --list; exit ;;
+        --help|-h)  usage; exit ;;
+        *)          ARGS+=("$1"); shift ;;
+    esac
+done
+
+(( ${#ARGS[@]} )) || { usage; exit 1; }
+
+APP="${ARGS[0]}"
+FIREJAIL_OPTS=()
+
+# Per-app smart defaults
+case "$APP" in
+    firefox|chromium|brave|brave-browser)
+        FIREJAIL_OPTS+=(--seccomp --nonewprivs --caps.drop=all --disable-mnt)
+        ;;
+    steam|lutris|heroic)
+        FIREJAIL_OPTS+=(--noprofile --ignore=private-bin)
+        GAMING=true
+        ;;
+    thunderbird|evolution)
+        FIREJAIL_OPTS+=(--seccomp --nonewprivs --caps.drop=all --net=none)
+        echo -e "${Y}  (email disabled in sandbox — use online via web)${N}"
+        ;;
+    discord|signal-desktop|telegram-desktop)
+        FIREJAIL_OPTS+=(--seccomp --nonewprivs)
+        ;;
+    burpsuite|zaproxy|metasploit|msfconsole)
+        # Pentest tools — need network but isolated home
+        FIREJAIL_OPTS+=(--private --seccomp --nonewprivs)
+        ;;
+esac
+
+# Flags override
+$PARANOID && FIREJAIL_OPTS+=(--net=none --no3d --nosound --nodbus --caps.drop=all --seccomp --private-dev)
+$PRIVATE  && FIREJAIL_OPTS+=(--private)
+$GAMING   && FIREJAIL_OPTS+=(--ignore=blacklist --ignore=noexec --ignore=seccomp --ignore=caps.drop)
+
+# Tor routing
+if $TOR; then
+    if ! systemctl is-active tor &>/dev/null; then
+        echo -e "${Y}Starting Tor...${N}"
+        sudo systemctl start tor
+    fi
+    # Use torsocks for the app
+    echo -e "${G}▶ Routing through Tor (SOCKS 127.0.0.1:9050)${N}"
+    exec firejail "${FIREJAIL_OPTS[@]}" --env=http_proxy=socks5://127.0.0.1:9050 --env=https_proxy=socks5://127.0.0.1:9050 torsocks "${ARGS[@]}"
+else
+    echo -e "${G}▶ Sandbox: ${APP}${N} $(printf '%s ' "${FIREJAIL_OPTS[@]}")"
+    exec firejail "${FIREJAIL_OPTS[@]}" "${ARGS[@]}"
+fi

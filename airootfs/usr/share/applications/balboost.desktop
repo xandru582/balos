@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=BalOS · Gaming Boost
+Comment=Apply maximum performance profile
+Exec=pkexec balboost default
+Icon=applications-games
+Terminal=false
+Categories=Game;Settings;
+Keywords=balos;game;boost;performance;

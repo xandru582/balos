@@ -1,0 +1,164 @@
+#!/usr/bin/env bash
+# BalOS — unified command (interactive fzf menu + direct dispatch)
+set -euo pipefail
+
+VERSION="1.0.0-dark"
+
+C='\033[0;36m'; G='\033[0;32m'; M='\033[0;35m'; Y='\033[1;33m'; R='\033[0;31m'
+B='\033[1m'; D='\033[2m'; N='\033[0m'
+
+usage() {
+cat << EOF
+${G}${B}BalOS${N} ${D}v${VERSION}${N} — hack · play · evade · endure
+
+${B}USAGE:${N}
+  bal                  ${D}# interactive fzf menu${N}
+  bal <cmd> [args]     ${D}# direct dispatch${N}
+
+${B}POWER${N}
+  ${C}boost${N}      Gaming mode (max CPU/GPU, low audio latency)
+  ${C}saver${N}      Extreme battery mode (up to 2× battery)
+  ${C}balance${N}    Default balanced profile
+  ${C}monitor${N}    Live TUI dashboard
+  ${C}status${N}     One-shot profile & system stats
+
+${B}SECURITY & PRIVACY${N}
+  ${C}shield${N} ${D}<level>${N}        Firewall: off|normal|armor|fortress
+  ${C}stealth${N} ${D}<on|off|test>${N} Tor + DoH + MAC randomize
+  ${C}vault${N} ${D}<cmd>${N}           Encrypted secrets manager
+  ${C}sandbox${N} ${D}<app>${N}         Run app in firejail sandbox
+  ${C}clip${N} ${D}<cmd>${N}            Encrypted clipboard history
+  ${C}panic${N} ${D}[tier]${N}          Emergency: soft|hard|nuclear
+  ${C}rescue${N} ${D}<cmd>${N}          Anti-forensics (wipe RAM/swap)
+
+${B}NETWORK${N}
+  ${C}vpn${N} ${D}<up|down>${N}         WireGuard VPN toggle
+  ${C}net${N} ${D}<cmd>${N}             Network utilities
+  ${C}geo${N} ${D}<cmd>${N}             SSID-based auto-shield
+
+${B}HACKING${N}
+  ${C}hack${N} ${D}<mode>${N}           recon|web|wifi|reverse|forensics|crack|osint
+  ${C}recon${N} ${D}<target>${N}        Automated recon workflow
+  ${C}pwn${N} ${D}<cmd>${N}             Reverse shell generator + listener
+  ${C}watch${N} ${D}<cmd>${N}           Anomaly detector daemon
+
+${B}SYSTEM${N}
+  ${C}update${N}             Snapshot-backed system update
+  ${C}init${N}               First-boot wizard
+  ${C}kernel${N} ${D}build${N}        Compile custom BalKernel (~45 min)
+
+${B}EXAMPLES${N}
+  ${D}bal${N}                             ${D}# pick from menu${N}
+  ${D}bal boost${N}                       ${D}# gaming mode${N}
+  ${D}bal hack wifi wlan0${N}             ${D}# WiFi audit workspace${N}
+  ${D}bal shield fortress${N}             ${D}# VPN kill-switch${N}
+  ${D}bal panic hard${N}                  ${D}# deeper sanitize${N}
+  ${D}bal pwn listen 4444${N}             ${D}# reverse shell listener${N}
+
+EOF
+}
+
+# ── Interactive fzf menu ─────────────────────────────────────────
+interactive_menu() {
+    command -v fzf &>/dev/null || { usage; exit 0; }
+
+    local choice
+    choice=$(cat << MENU | fzf \
+        --ansi --border=rounded --height=85% --layout=reverse \
+        --prompt="▶ bal · " --pointer="►" \
+        --header="[ BalOS v${VERSION} — hack · play · evade · endure ]" \
+        --color='fg:#b8ffce,bg:#020604,hl:#00ff88,fg+:#00ff88,bg+:#0a1810,hl+:#ffcc33,info:#b580ff,prompt:#00ff88,pointer:#ff3366,marker:#b580ff,spinner:#00ff88,header:#3a7040,border:#00ff88' \
+        --preview='echo {} | cut -d"·" -f2- | head -c 200' \
+        --preview-window=bottom:3:wrap --tiebreak=begin | awk '{print $1}')
+⚡ boost         · Gaming mode — max CPU, turbo, low-lat audio
+🔋 saver         · Extreme battery — can double battery life
+⚖  balance       · Balanced default profile
+📊 monitor       · Live TUI dashboard
+🛡  shield        · Firewall level picker (off/normal/armor/fortress)
+🥷 stealth       · Anonymize: Tor + DoH + MAC randomize
+🌐 vpn-up        · Bring up WireGuard tunnel
+🌐 vpn-down      · Tear down WireGuard
+🔐 vault         · Password / secrets manager
+📋 clip          · Encrypted clipboard history
+🏖  sandbox       · Run app in firejail
+🎯 hack-recon    · Network discovery workspace
+🕸  hack-web      · Web pentest workspace
+📡 hack-wifi     · WiFi audit workspace
+🔬 hack-reverse  · Binary analysis workspace
+🕵  hack-forensic · Disk/memory forensics
+🔓 hack-crack    · Password cracking workspace
+🔎 hack-osint    · OSINT gathering
+🐚 pwn-listen    · Spawn reverse-shell listener
+🐚 pwn-gen       · Generate reverse-shell payload
+🌍 geo-auto      · Enable SSID-based auto-shield
+🚨 panic-soft    · Sanitize (light)
+🚨 panic-hard    · Sanitize (deep)
+☢  panic-nuclear · Wipe + lock (irreversible)
+♻  update        · Snapshot-backed system update
+⚙  init          · Run first-boot wizard
+🔧 kernel-build  · Compile BalKernel (~45 min)
+MENU
+    )
+
+    [[ -z "$choice" ]] && exit 0
+
+    case "$choice" in
+        ⚡)            exec balboost ;;
+        🔋)            exec balsaver ;;
+        ⚖)             exec balsaver --balanced ;;
+        📊)           exec balmonitor ;;
+        🛡)            echo "Level [off/normal/armor/fortress]:"; read -r L; exec balshield "$L" ;;
+        🥷)           exec balstealth on ;;
+        🌐)           [[ "$choice" == *up* ]] && exec balnet vpn up || exec balnet vpn down ;;
+        🔐)           exec balvault ;;
+        📋)           exec balclip ;;
+        🏖)            echo "App to sandbox:"; read -r A; exec balsandbox "$A" ;;
+        🎯)           exec balhack recon ;;
+        🕸)            exec balhack web ;;
+        📡)           exec balhack wifi ;;
+        🔬)           exec balhack reverse ;;
+        🕵)            exec balhack forensics ;;
+        🔓)           exec balhack crack ;;
+        🔎)           exec balhack osint ;;
+        🐚)           [[ "$choice" == *listen* ]] && exec balpwn listen || exec balpwn gen ;;
+        🌍)           exec balgeo auto-on ;;
+        🚨)           [[ "$choice" == *soft* ]] && exec balpanic soft || exec balpanic hard ;;
+        ☢)             exec balpanic nuclear ;;
+        ♻)             exec balupdate ;;
+        ⚙)             exec balinit ;;
+        🔧)           exec balkernel-build ;;
+        *)            exit 0 ;;
+    esac
+}
+
+# ── Main dispatcher ──────────────────────────────────────────────
+CMD="${1:-}"; shift || true
+
+case "$CMD" in
+    "")                      interactive_menu ;;
+    boost|gaming)            exec balboost "$@" ;;
+    saver|battery)           exec balsaver "$@" ;;
+    balance|default)         exec balsaver --balanced ;;
+    status)                  exec balmonitor --once ;;
+    monitor|dash)            exec balmonitor "$@" ;;
+    shield|firewall)         exec balshield "$@" ;;
+    stealth|anon)            exec balstealth "$@" ;;
+    vault|secrets)           exec balvault "$@" ;;
+    sandbox|jail)            exec balsandbox "$@" ;;
+    clip|clipboard)          exec balclip "$@" ;;
+    panic|nuke)              exec balpanic "$@" ;;
+    rescue|antiforensics)    exec balrescue "$@" ;;
+    vpn)                     exec balnet vpn "$@" ;;
+    net|network)             exec balnet "$@" ;;
+    geo|geofence)            exec balgeo "$@" ;;
+    hack|pentest)            exec balhack "$@" ;;
+    recon)                   exec balrecon "$@" ;;
+    pwn|rev-shell)           exec balpwn "$@" ;;
+    watch|monitor-anomaly)   exec balwatch "$@" ;;
+    update|upgrade)          exec balupdate "$@" ;;
+    init|setup)              exec balinit "$@" ;;
+    kernel)                  exec balkernel-build "$@" ;;
+    version|-v|--version)    echo "BalOS v${VERSION}" ;;
+    help|-h|--help)          usage ;;
+    *)                       echo "Unknown command: $CMD"; echo ""; usage; exit 1 ;;
+esac

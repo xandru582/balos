@@ -1,0 +1,336 @@
+#!/usr/bin/env bash
+# balboost — maximum gaming performance, with per-game profiles
+# Usage: balboost [profile] [--game <name>]
+#   profile: default | competitive | cinematic | esports | streaming | emulation
+set -euo pipefail
+
+G='\033[0;32m'; C='\033[0;36m'; Y='\033[1;33m'; R='\033[0;31m'; M='\033[0;35m'
+B='\033[1m'; D='\033[2m'; N='\033[0m'
+
+PROFILES_DIR="/etc/balos/game-profiles"
+USER_PROFILES="$HOME/.config/balos/game-profiles"
+
+usage() {
+cat << EOF
+${C}${B}balboost${N} — gaming performance profiles
+
+  balboost                      Default gaming boost
+  balboost ${C}<profile>${N}              Apply a named profile
+  balboost ${C}--game <game>${N}          Auto-detect profile for a known game
+  balboost ${C}list${N}                   List all profiles
+  balboost ${C}show <profile>${N}         Show profile contents
+  balboost ${C}save <name>${N}            Save current state as profile
+  balboost ${C}off${N}                    Release boost (run balsaver)
+
+${B}PROFILES${N}
+  ${C}default${N}      Balanced high-performance (default)
+  ${C}competitive${N}  CS2/Valorant/Overwatch — max CPU, min latency, 256µs audio
+  ${C}cinematic${N}    Cyberpunk/AAA — GPU-priority, high quality
+  ${C}esports${N}      League/Dota — network-critical tuning
+  ${C}streaming${N}    OBS + game — reserve cores for encode
+  ${C}emulation${N}    Dolphin/RPCS3 — huge L3 cache, SMT pinning
+
+${B}GAME MAP${N} ${D}(auto-detect via --game)${N}
+  cs2, csgo, valorant → competitive
+  cyberpunk, eldenring, rdr2 → cinematic
+  lol, dota2 → esports
+  obs, streamlabs → streaming
+  dolphin, rpcs3, pcsx2 → emulation
+EOF
+}
+
+ensure_dirs() {
+    mkdir -p "$PROFILES_DIR"
+    # Seed default profiles if none exist
+    [[ -f "$PROFILES_DIR/default.conf" ]] || seed_profiles
+}
+
+seed_profiles() {
+    cat > "$PROFILES_DIR/default.conf" << 'EOF'
+# Balanced gaming
+CPU_GOV=performance
+CPU_BOOST=1
+CPU_MAX_PERF=100
+GPU_LEVEL=high
+AUDIO_QUANTUM=256
+NET_QDISC=fq
+NET_CC=bbr
+COMPOSITOR=on
+SWAPPINESS=10
+HUGE_PAGES=0
+EOF
+    cat > "$PROFILES_DIR/competitive.conf" << 'EOF'
+# CS2 / Valorant / Overwatch — min latency above all
+CPU_GOV=performance
+CPU_BOOST=1
+CPU_MAX_PERF=100
+GPU_LEVEL=high
+AUDIO_QUANTUM=128
+NET_QDISC=fq
+NET_CC=bbr
+NET_LOW_LATENCY=1
+COMPOSITOR=off
+SWAPPINESS=1
+SCHED_LATENCY=2000000
+SCHED_MIN_GRAN=300000
+IRQ_AFFINITY=cpu0
+EOF
+    cat > "$PROFILES_DIR/cinematic.conf" << 'EOF'
+# AAA single-player: GPU-bound, quality-first
+CPU_GOV=performance
+CPU_BOOST=1
+CPU_MAX_PERF=100
+GPU_LEVEL=high
+GPU_POWER_PROFILE=5
+AUDIO_QUANTUM=512
+NET_QDISC=fq
+NET_CC=bbr
+COMPOSITOR=on
+SWAPPINESS=10
+HUGE_PAGES=1
+MGLRU_MIN_TTL=5000
+EOF
+    cat > "$PROFILES_DIR/esports.conf" << 'EOF'
+# LoL / Dota — netcode matters most
+CPU_GOV=performance
+CPU_BOOST=1
+CPU_MAX_PERF=100
+GPU_LEVEL=auto
+AUDIO_QUANTUM=256
+NET_QDISC=fq
+NET_CC=bbr
+NET_LOW_LATENCY=1
+NET_BACKLOG=32768
+NET_TCP_FASTOPEN=3
+COMPOSITOR=off
+SWAPPINESS=1
+EOF
+    cat > "$PROFILES_DIR/streaming.conf" << 'EOF'
+# OBS + gaming — reserve cores for encoder
+CPU_GOV=performance
+CPU_BOOST=1
+CPU_MAX_PERF=100
+GPU_LEVEL=high
+AUDIO_QUANTUM=256
+NET_QDISC=fq
+NET_CC=bbr
+COMPOSITOR=on
+SWAPPINESS=10
+RESERVE_CORES=2
+EOF
+    cat > "$PROFILES_DIR/emulation.conf" << 'EOF'
+# Dolphin / RPCS3 / PCSX2 — cache-sensitive
+CPU_GOV=performance
+CPU_BOOST=1
+CPU_MAX_PERF=100
+GPU_LEVEL=high
+AUDIO_QUANTUM=256
+NET_QDISC=fq
+NET_CC=bbr
+COMPOSITOR=on
+SWAPPINESS=5
+HUGE_PAGES=1
+SCHED_CHILD_RUNS_FIRST=1
+TRANSPARENT_HUGE=always
+EOF
+}
+
+list_profiles() {
+    ensure_dirs
+    echo -e "${C}${B}Available profiles:${N}"
+    for f in "$PROFILES_DIR"/*.conf; do
+        [[ -f "$f" ]] || continue
+        local name=$(basename "$f" .conf)
+        printf "  ${C}%-14s${N} %s\n" "$name" "$(head -1 "$f" | sed 's/^# //')"
+    done
+}
+
+show_profile() {
+    local name="${1:?profile name required}"
+    local f="$PROFILES_DIR/${name}.conf"
+    [[ -f "$f" ]] || { echo "no such profile: $name"; exit 1; }
+    cat "$f"
+}
+
+# Game → profile mapping
+game_to_profile() {
+    local g=$(echo "$1" | tr '[:upper:]' '[:lower:]')
+    case "$g" in
+        cs2|csgo|counterstrike|valorant|overwatch|apex|r6|rainbow*|rocketleague) echo "competitive" ;;
+        cyberpunk|eldenring|rdr2|witcher3|baldursgate*|starfield|hogwarts) echo "cinematic" ;;
+        lol|leagueoflegends|dota|dota2|smite) echo "esports" ;;
+        obs|streamlabs|obs-studio) echo "streaming" ;;
+        dolphin|rpcs3|pcsx2|ppsspp|yuzu|ryujinx|citra|duckstation) echo "emulation" ;;
+        *) echo "default" ;;
+    esac
+}
+
+# ─── apply a profile ───────────────────────────────────────────
+apply_profile() {
+    local profile="$1"
+    local f="$PROFILES_DIR/${profile}.conf"
+    [[ -f "$f" ]] || { echo -e "${R}no such profile: $profile${N}"; exit 1; }
+
+    # Read conf into shell vars
+    # shellcheck disable=SC1090
+    source "$f"
+
+    echo -e "${C}${B}⚡ Applying profile: ${M}${profile}${N}\n"
+    step() { echo -e "  ${G}✓${N} $*"; }
+
+    # CPU governor
+    for gov in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+        echo "${CPU_GOV:-performance}" > "$gov" 2>/dev/null
+    done
+    step "CPU governor → ${CPU_GOV:-performance}"
+
+    # Unlock cores
+    for core in /sys/devices/system/cpu/cpu*/online; do
+        echo 1 > "$core" 2>/dev/null || true
+    done
+
+    # Boost/Turbo
+    [[ -f /sys/devices/system/cpu/cpufreq/boost ]] && echo "${CPU_BOOST:-1}" > /sys/devices/system/cpu/cpufreq/boost
+    [[ -f /sys/devices/system/cpu/intel_pstate/no_turbo ]] && echo 0 > /sys/devices/system/cpu/intel_pstate/no_turbo
+    [[ -f /sys/devices/system/cpu/intel_pstate/max_perf_pct ]] && echo "${CPU_MAX_PERF:-100}" > /sys/devices/system/cpu/intel_pstate/max_perf_pct
+    step "CPU boost + max_perf"
+
+    # Energy perf bias
+    for f2 in /sys/devices/system/cpu/cpu*/power/energy_perf_bias; do
+        [[ -f "$f2" ]] && echo 0 > "$f2" 2>/dev/null
+    done
+
+    # GPU (AMD)
+    for card in /sys/class/drm/card*/device; do
+        [[ -f "$card/power_dpm_force_performance_level" ]] && echo "${GPU_LEVEL:-high}" > "$card/power_dpm_force_performance_level" 2>/dev/null
+        [[ -n "${GPU_POWER_PROFILE:-}" && -f "$card/pp_power_profile_mode" ]] && echo "$GPU_POWER_PROFILE" > "$card/pp_power_profile_mode" 2>/dev/null
+    done
+    step "GPU → ${GPU_LEVEL:-high}"
+
+    # Intel GPU max freq
+    if [[ -f /sys/class/drm/card0/gt_RPn_freq_mhz ]]; then
+        local max=$(cat /sys/class/drm/card0/gt_RPn_freq_mhz 2>/dev/null)
+        [[ -n "$max" ]] && echo "$max" > /sys/class/drm/card0/gt_min_freq_mhz 2>/dev/null
+    fi
+
+    # NVIDIA — PowerMizer prefer max performance
+    if command -v nvidia-settings &>/dev/null && [[ -n "${DISPLAY:-}" ]]; then
+        nvidia-settings -a '[gpu:0]/GpuPowerMizerMode=1' &>/dev/null || true
+    fi
+
+    # TLP AC
+    command -v tlp &>/dev/null && tlp ac &>/dev/null
+
+    # Kernel scheduler tunables
+    sysctl -q vm.swappiness="${SWAPPINESS:-10}"
+    sysctl -q vm.vfs_cache_pressure=50
+    sysctl -q kernel.sched_migration_cost_ns=5000000
+    sysctl -q kernel.sched_latency_ns="${SCHED_LATENCY:-3000000}" 2>/dev/null || true
+    sysctl -q kernel.sched_min_granularity_ns="${SCHED_MIN_GRAN:-500000}" 2>/dev/null || true
+    sysctl -q kernel.sched_wakeup_granularity_ns=1000000 2>/dev/null || true
+    [[ -n "${SCHED_CHILD_RUNS_FIRST:-}" ]] && sysctl -q kernel.sched_child_runs_first="$SCHED_CHILD_RUNS_FIRST" 2>/dev/null || true
+    step "Scheduler tuned"
+
+    # Network
+    sysctl -q "net.ipv4.tcp_congestion_control=${NET_CC:-bbr}" 2>/dev/null || true
+    sysctl -q "net.core.default_qdisc=${NET_QDISC:-fq}" 2>/dev/null || true
+    sysctl -q "net.core.netdev_max_backlog=${NET_BACKLOG:-16384}"
+    [[ "${NET_LOW_LATENCY:-0}" == "1" ]] && sysctl -q net.ipv4.tcp_low_latency=1 2>/dev/null || true
+    [[ -n "${NET_TCP_FASTOPEN:-}" ]] && sysctl -q "net.ipv4.tcp_fastopen=$NET_TCP_FASTOPEN" 2>/dev/null || true
+    step "Network → ${NET_CC:-bbr} + ${NET_QDISC:-fq}"
+
+    # NVMe APST
+    for nvme in /sys/block/nvme*/device/power/control; do
+        [[ -w "$nvme" ]] && echo on > "$nvme" 2>/dev/null
+    done
+
+    # Huge pages
+    if [[ "${HUGE_PAGES:-0}" == "1" ]]; then
+        echo "${TRANSPARENT_HUGE:-madvise}" > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true
+        step "Transparent huge pages → ${TRANSPARENT_HUGE:-madvise}"
+    fi
+
+    # Audio (PipeWire quantum)
+    if command -v pw-metadata &>/dev/null; then
+        local UN="$(logname 2>/dev/null || echo root)"
+        runuser -u "$UN" -- pw-metadata -n settings 0 clock.force-quantum "${AUDIO_QUANTUM:-256}" 2>/dev/null \
+            && step "Audio → ${AUDIO_QUANTUM:-256} samples"
+    fi
+
+    # Compositor
+    if [[ "${COMPOSITOR:-on}" == "off" ]]; then
+        local UN="$(logname 2>/dev/null || echo root)"
+        runuser -u "$UN" -- qdbus6 org.kde.KWin /Compositor suspend &>/dev/null || true
+        step "Compositor → suspended (FPS boost)"
+    fi
+
+    # Reserve cores for encode (streaming)
+    if [[ -n "${RESERVE_CORES:-}" ]]; then
+        local total=$(nproc)
+        local start=$((total - RESERVE_CORES))
+        echo "isolated cores: $start-$((total-1)) (via taskset for encoder)" > /run/balos-reserved-cores
+        step "$RESERVE_CORES cores reserved for encoder"
+    fi
+
+    # IRQ balance
+    systemctl stop irqbalance 2>/dev/null || true
+
+    # Screensaver
+    xset s off -dpms 2>/dev/null || true
+
+    # Record state
+    echo "boost:$profile" > /run/balos-mode 2>/dev/null || echo "boost:$profile" > /tmp/balos-mode
+
+    # Start GameMode
+    if command -v gamemoderun &>/dev/null; then
+        local UN="$(logname 2>/dev/null || echo "")"
+        [[ -n "$UN" ]] && runuser -u "$UN" -- systemctl --user start gamemoded 2>/dev/null || true
+    fi
+
+    echo -e "\n${G}${B}╔════════════════════════════════════════╗${N}"
+    printf "${G}${B}║   BOOST: %-30s║${N}\n" "$profile"
+    echo -e "${G}${B}╚════════════════════════════════════════╝${N}"
+    echo -e "  Launch game: ${C}gamemoderun <cmd>${N}"
+    echo -e "  Restore:     ${C}bal saver${N}\n"
+}
+
+save_profile() {
+    local name="${1:?name required}"
+    local f="$PROFILES_DIR/${name}.conf"
+    {
+        echo "# Custom profile: $name ($(date +%Y-%m-%d))"
+        echo "CPU_GOV=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null)"
+        echo "CPU_BOOST=$(cat /sys/devices/system/cpu/cpufreq/boost 2>/dev/null || echo 1)"
+        echo "SWAPPINESS=$(sysctl -n vm.swappiness)"
+        echo "NET_CC=$(sysctl -n net.ipv4.tcp_congestion_control)"
+        echo "NET_QDISC=$(sysctl -n net.core.default_qdisc 2>/dev/null)"
+    } > "$f"
+    echo -e "${G}✓ saved: $f${N}"
+}
+
+# ── dispatch ──────────────────────────────────────────────────
+[[ $EUID -ne 0 ]] && [[ "${1:-}" != "list" && "${1:-}" != "show" && "${1:-}" != "help" && "${1:-}" != "-h" && "${1:-}" != "--help" ]] && exec sudo "$0" "$@"
+
+ensure_dirs
+
+case "${1:-default}" in
+    list|ls)          list_profiles ;;
+    show|cat)         shift; show_profile "$@" ;;
+    save)             shift; save_profile "$@" ;;
+    off|stop|release) exec balsaver ;;
+    help|-h|--help)   usage ;;
+    --game)
+        [[ -z "${2:-}" ]] && { echo "usage: balboost --game <name>"; exit 1; }
+        prof=$(game_to_profile "$2")
+        echo -e "${D}(game '$2' → profile '$prof')${N}"
+        apply_profile "$prof"
+        ;;
+    *)
+        # If arg is a known profile file, apply it; otherwise default
+        if [[ -f "$PROFILES_DIR/${1}.conf" ]]; then
+            apply_profile "$1"
+        else
+            apply_profile "default"
+        fi
+        ;;
+esac

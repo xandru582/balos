@@ -1,0 +1,32 @@
+# BalOS — Rubber Ducky / Bash Bunny heuristic detection
+# Fires balwatch alert if a HID device enumerates that also has mass storage
+# or network descriptors, or uses known-bad vendor IDs.
+
+# Known Rubber Ducky / Bash Bunny / OMG cable VIDs:
+#  - 03eb (Atmel — original Ducky)
+#  - 16d0 (MCS — OMG cable variants)
+#  - 1d6b:0104 (BashBunny emulated)
+
+# Alert on suspicious VIDs
+SUBSYSTEM=="usb", ATTR{idVendor}=="03eb", ATTR{bDeviceClass}=="00", \
+    RUN+="/usr/bin/logger -t balwatch 'USB-ALERT: suspicious VID 03eb (Ducky?) inserted'", \
+    RUN+="/usr/bin/bash -c 'notify-send -u critical \"BalOS: USB Alert\" \"Potential Rubber Ducky detected (VID 03eb)\" || true'"
+
+SUBSYSTEM=="usb", ATTR{idVendor}=="16d0", \
+    RUN+="/usr/bin/logger -t balwatch 'USB-ALERT: suspicious VID 16d0 (OMG cable?) inserted'", \
+    RUN+="/usr/bin/bash -c 'notify-send -u critical \"BalOS: USB Alert\" \"Potential OMG cable detected (VID 16d0)\" || true'"
+
+# Alert on composite devices: HID + Mass Storage
+SUBSYSTEM=="usb", ATTR{bDeviceClass}=="00", ATTR{bNumInterfaces}=="[3-9]*", \
+    RUN+="/usr/bin/logger -t balwatch 'USB-ALERT: composite device with many interfaces: %k VID=%E{ID_VENDOR_ID} PID=%E{ID_MODEL_ID}'"
+
+# Generic: any new HID device logs to balwatch
+SUBSYSTEM=="usb", ENV{ID_INPUT_KEYBOARD}=="1", ACTION=="add", \
+    RUN+="/usr/bin/logger -t balwatch 'USB-KBD: new keyboard: vendor=$env{ID_VENDOR_ID} product=$env{ID_MODEL_ID} name=$env{ID_VENDOR}/$env{ID_MODEL}'"
+
+# Screen-locked paranoid mode: block NEW HID devices when session locked
+# Requires balwatch daemon to check /run/balos/screen-locked
+SUBSYSTEM=="usb", ENV{ID_INPUT_KEYBOARD}=="1", ACTION=="add", \
+    TEST=="/run/balos/screen-locked", \
+    RUN+="/usr/bin/sh -c 'echo 0 > /sys/$devpath/authorized'", \
+    RUN+="/usr/bin/logger -t balwatch 'USB-BLOCKED: keyboard rejected while screen locked'"

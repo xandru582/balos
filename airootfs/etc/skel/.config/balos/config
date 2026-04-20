@@ -1,0 +1,29 @@
+# BalOS per-user config
+# This file controls default behaviour for bal commands
+
+[profile]
+# default profile on battery: saver | saver-extreme | balanced
+battery = saver
+# default profile on AC: boost | balanced
+ac = balanced
+
+[stealth]
+# Auto-enable stealth mode on untrusted networks
+auto_on_public_wifi = false
+
+[firewall]
+# Default level on boot: off | normal | armor | fortress
+default = normal
+
+[panic]
+# Actions on 'bal panic' (comma-separated)
+actions = kill_apps,clear_history,flush_dns,randomize_mac,lock_session
+
+[gaming]
+# Auto-boost when launching known gaming processes
+auto_boost = true
+boost_triggers = steam,lutris,heroic,wine,proton
+
+[hack]
+# Default wordlist for hack workspaces
+wordlist = /usr/share/wordlists/rockyou.txt

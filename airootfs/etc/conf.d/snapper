@@ -1,0 +1,2 @@
+# BalOS — snapper configured subvolumes
+SNAPPER_CONFIGS="root home"

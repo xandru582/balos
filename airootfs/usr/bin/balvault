@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# balvault — GPG-encrypted secrets manager with TUI
+# Wraps pass(1) with fzf picker, auto-clipboard, and QR export
+set -euo pipefail
+
+G='\033[0;32m'; C='\033[0;36m'; Y='\033[1;33m'; M='\033[0;35m'; R='\033[0;31m'
+B='\033[1m'; D='\033[2m'; N='\033[0m'
+
+VAULT_DIR="${BALVAULT_DIR:-$HOME/.balvault}"
+export PASSWORD_STORE_DIR="$VAULT_DIR"
+export PASSWORD_STORE_CLIP_TIME=20
+
+need() { command -v "$1" &>/dev/null || { echo -e "${R}missing: $1${N}"; return 1; }; }
+
+usage() {
+cat << EOF
+${C}${B}balvault${N} — encrypted secrets
+
+  ${C}init${N} ${D}<gpg-id>${N}   Initialize vault with GPG identity
+  ${C}add${N} ${D}<name>${N}      Add new secret
+  ${C}get${N} ${D}[name]${N}      Retrieve (fzf picker if no name)
+  ${C}list${N}              List entries
+  ${C}edit${N} ${D}<name>${N}     Edit entry
+  ${C}rm${N} ${D}<name>${N}       Remove
+  ${C}gen${N} ${D}<name>${N}      Generate random password
+  ${C}sync${N} ${D}<git-url>${N}  Sync to encrypted git remote
+  ${C}lock${N}              Forget GPG cache immediately
+  ${C}qr${N} ${D}<name>${N}       Show secret as QR code (for phone)
+
+${B}VAULT:${N} ${VAULT_DIR}
+EOF
+}
+
+init_vault() {
+    local gpg_id="${1:-}"
+    if [[ -z "$gpg_id" ]]; then
+        if ! gpg --list-secret-keys --keyid-format LONG 2>/dev/null | grep -q sec; then
+            echo -e "${Y}No GPG key found. Generating Ed25519...${N}"
+            gpg --quick-generate-key "${USER}@$(hostname)" ed25519 default 1y
+        fi
+        gpg_id=$(gpg --list-secret-keys --keyid-format LONG | awk -F'/' '/^sec/{print $2}' | awk '{print $1}' | head -1)
+    fi
+    pass init "$gpg_id"
+    echo -e "${G}✓ Vault initialized with GPG key ${gpg_id}${N}"
+}
+
+add_secret() {
+    local name="${1:?usage: balvault add <name>}"
+    pass insert -m "$name"
+}
+
+get_secret() {
+    local name="${1:-}"
+    if [[ -z "$name" ]]; then
+        need fzf || exit 1
+        name=$(cd "$VAULT_DIR" && fd -e gpg . | sed 's/\.gpg$//' | fzf --prompt="▶ secret · ")
+        [[ -z "$name" ]] && exit 0
+    fi
+    pass show -c "$name"
+    echo -e "${G}✓ Copied to clipboard (clears in 20s)${N}"
+}
+
+list_secrets() {
+    pass ls
+}
+
+gen_secret() {
+    local name="${1:?usage: balvault gen <name>}"
+    local length="${2:-32}"
+    pass generate -c "$name" "$length"
+}
+
+sync_vault() {
+    cd "$VAULT_DIR" || exit 1
+    if [[ ! -d .git ]]; then
+        pass git init
+        [[ -n "${1:-}" ]] && pass git remote add origin "$1"
+    fi
+    pass git add -A
+    pass git commit -m "sync $(date -Iseconds)" 2>/dev/null || true
+    pass git push 2>/dev/null || echo -e "${Y}(set up remote: balvault sync <git-url>)${N}"
+}
+
+lock_vault() {
+    echo RELOADAGENT | gpg-connect-agent >/dev/null 2>&1
+    echo -e "${G}✓ GPG cache cleared${N}"
+}
+
+qr_secret() {
+    local name="${1:?usage: balvault qr <name>}"
+    need qrencode || { echo "install qrencode"; exit 1; }
+    pass show "$name" | head -1 | qrencode -t ansiutf8
+}
+
+need pass || { echo "install: sudo pacman -S pass"; exit 1; }
+
+case "${1:-menu}" in
+    init)  shift; init_vault "$@" ;;
+    add|insert) shift; add_secret "$@" ;;
+    get|show|copy) shift; get_secret "$@" ;;
+    list|ls) list_secrets ;;
+    edit) shift; pass edit "$@" ;;
+    rm|remove|delete) shift; pass rm "$@" ;;
+    gen|generate) shift; gen_secret "$@" ;;
+    sync|git) shift; sync_vault "$@" ;;
+    lock)  lock_vault ;;
+    qr)    shift; qr_secret "$@" ;;
+    menu|help|*) usage ;;
+esac

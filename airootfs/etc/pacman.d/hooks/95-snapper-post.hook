@@ -1,0 +1,12 @@
+[Trigger]
+Operation = Upgrade
+Operation = Install
+Operation = Remove
+Type = Package
+Target = *
+
+[Action]
+Description = BalOS post-transaction snapshot
+When = PostTransaction
+Exec = /usr/bin/sh -c "[ -f /tmp/balos-pre-snap ] && /usr/bin/snapper --no-dbus create --type=post --pre-number=$(cat /tmp/balos-pre-snap) --cleanup-algorithm=number --description='pacman post' --userdata=important=no 2>/dev/null; rm -f /tmp/balos-pre-snap || true"
+Depends = snapper

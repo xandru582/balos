@@ -1,0 +1,13 @@
+[Trigger]
+Operation = Upgrade
+Operation = Install
+Operation = Remove
+Type = Package
+Target = *
+
+[Action]
+Description = BalOS pre-transaction snapshot
+When = PreTransaction
+Exec = /usr/bin/sh -c "/usr/bin/snapper --no-dbus create --type=pre --cleanup-algorithm=number --print-number --description='pacman $PACMAN_CMD' --userdata=important=no > /tmp/balos-pre-snap 2>/dev/null || true"
+Depends = snapper
+AbortOnFail =

@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>BalOS Project</vendor>
+  <vendor_url>https://balos.io</vendor_url>
+
+  <action id="org.balos.powerprofile">
+    <description>Change BalOS power profile</description>
+    <message>Authentication is required to change power profile</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/balboost</annotate>
+  </action>
+
+  <action id="org.balos.firewall">
+    <description>Change BalOS firewall level</description>
+    <message>Authentication is required to change firewall level</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.balos.stealth">
+    <description>Toggle BalOS stealth mode</description>
+    <message>Authentication is required to toggle stealth mode</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+</policyconfig>

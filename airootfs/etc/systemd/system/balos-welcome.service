@@ -1,0 +1,12 @@
+[Unit]
+Description=BalOS first-boot welcome message
+After=multi-user.target
+ConditionPathExists=!/var/lib/balos/welcomed
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'mkdir -p /var/lib/balos && date > /var/lib/balos/welcomed'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

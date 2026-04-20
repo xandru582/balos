@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+# balgeo — SSID-based auto-geofence
+# When you connect to WiFi: looks up SSID in rules DB → applies shield + stealth
+set -euo pipefail
+
+G='\033[0;32m'; C='\033[0;36m'; Y='\033[1;33m'; M='\033[0;35m'; R='\033[0;31m'
+B='\033[1m'; D='\033[2m'; N='\033[0m'
+
+RULES="/etc/balos/geofence.rules"
+HOOK_DIR="/etc/NetworkManager/dispatcher.d"
+HOOK="$HOOK_DIR/99-balos-geofence"
+
+usage() {
+cat << EOF
+${C}${B}balgeo${N} — SSID-based automatic firewall/VPN switcher
+
+  ${C}auto-on${N}                    Install NetworkManager hook
+  ${C}auto-off${N}                   Remove hook
+  ${C}add <ssid> <profile>${N}       Map SSID → profile
+                              profiles: trusted | normal | armor | fortress | stealth
+  ${C}rm <ssid>${N}                  Remove SSID rule
+  ${C}list${N}                       Show all rules
+  ${C}status${N}                     Current SSID + applied profile
+  ${C}apply${N}                      Manually trigger for current SSID
+
+${B}PROFILES${N}
+  ${C}trusted${N}     Firewall=off, VPN=off, Stealth=off   ${D}(your home)${N}
+  ${C}normal${N}      Firewall=normal, VPN=off             ${D}(known networks)${N}
+  ${C}armor${N}       Firewall=armor, VPN=up               ${D}(office, friend's)${N}
+  ${C}fortress${N}    Firewall=fortress, VPN=up            ${D}(airports, hotels)${N}
+  ${C}stealth${N}     Firewall=fortress, Stealth=on        ${D}(fully paranoid)${N}
+
+${B}CURRENT RULES:${N}   ${RULES}
+EOF
+}
+
+init_rules() {
+    sudo mkdir -p /etc/balos
+    [[ -f "$RULES" ]] || {
+        sudo tee "$RULES" >/dev/null << 'RULES'
+# BalOS geofence rules — one per line: SSID|profile
+# Profiles: trusted | normal | armor | fortress | stealth
+# Default (unlisted SSIDs) is set by DEFAULT= below.
+DEFAULT=armor
+#MyHomeWiFi|trusted
+#OfficeWiFi|armor
+#Starbucks|fortress
+#Hotel-Free-WiFi|stealth
+RULES
+    }
+}
+
+apply_profile() {
+    local profile="$1"
+    case "$profile" in
+        trusted)
+            sudo balshield off &>/dev/null
+            sudo balstealth off &>/dev/null
+            ;;
+        normal)
+            sudo balshield normal &>/dev/null
+            sudo balstealth off &>/dev/null
+            ;;
+        armor)
+            sudo balshield armor &>/dev/null
+            sudo wg-quick up wg0 &>/dev/null || true
+            ;;
+        fortress)
+            sudo wg-quick up wg0 &>/dev/null || true
+            sudo balshield fortress &>/dev/null
+            ;;
+        stealth)
+            sudo wg-quick up wg0 &>/dev/null || true
+            sudo balshield fortress &>/dev/null
+            sudo balstealth on &>/dev/null
+            ;;
+    esac
+    logger -t balgeo "applied profile: $profile"
+}
+
+current_ssid() {
+    nmcli -t -f active,ssid dev wifi 2>/dev/null | awk -F: '$1=="yes"{print $2; exit}'
+}
+
+lookup_ssid() {
+    local ssid="$1"
+    [[ -f "$RULES" ]] || { echo "armor"; return; }
+    local match=$(grep -F "${ssid}|" "$RULES" 2>/dev/null | head -1 | cut -d'|' -f2)
+    if [[ -n "$match" ]]; then
+        echo "$match"
+    else
+        grep -oP '^DEFAULT=\K\S+' "$RULES" 2>/dev/null || echo "armor"
+    fi
+}
+
+install_hook() {
+    init_rules
+    sudo tee "$HOOK" >/dev/null << 'HOOK'
+#!/bin/bash
+# BalOS NetworkManager dispatcher — triggers geofence on WiFi connect
+IFACE="$1"
+STATUS="$2"
+[[ "$STATUS" != "up" ]] && exit 0
+[[ "$IFACE" != w* ]] && exit 0
+
+SSID=$(nmcli -t -f active,ssid dev wifi | awk -F: '$1=="yes"{print $2}')
+[[ -z "$SSID" ]] && exit 0
+
+# Apply profile
+/usr/bin/balgeo apply-ssid "$SSID" &
+HOOK
+    sudo chmod 755 "$HOOK"
+    echo -e "${G}✓ Geofence hook installed${N}"
+    echo -e "  Rules file: ${C}$RULES${N}"
+    echo -e "  Edit with: ${C}sudo \$EDITOR $RULES${N}"
+}
+
+remove_hook() {
+    sudo rm -f "$HOOK"
+    echo -e "${Y}▸ Geofence hook removed${N}"
+}
+
+apply_ssid() {
+    local ssid="${1:-$(current_ssid)}"
+    [[ -z "$ssid" ]] && { echo "no active WiFi"; exit 1; }
+    local profile=$(lookup_ssid "$ssid")
+    echo -e "${C}▸ SSID=${ssid}${N}  →  profile=${M}${profile}${N}"
+    apply_profile "$profile"
+    echo -e "${G}✓ applied${N}"
+}
+
+add_rule() {
+    init_rules
+    local ssid="${1:?usage: balgeo add <ssid> <profile>}"
+    local profile="${2:?profile required}"
+    case "$profile" in trusted|normal|armor|fortress|stealth) ;; *) echo "bad profile"; exit 1;; esac
+    sudo sed -i "/^${ssid//\//\\/}|/d" "$RULES"
+    echo "${ssid}|${profile}" | sudo tee -a "$RULES" >/dev/null
+    echo -e "${G}✓ ${ssid} → ${profile}${N}"
+}
+
+rm_rule() {
+    init_rules
+    local ssid="${1:?usage: balgeo rm <ssid>}"
+    sudo sed -i "/^${ssid//\//\\/}|/d" "$RULES"
+    echo -e "${Y}▸ removed: ${ssid}${N}"
+}
+
+list_rules() {
+    init_rules
+    echo -e "${B}Default:${N}  $(grep -oP '^DEFAULT=\K\S+' "$RULES" 2>/dev/null || echo 'armor')"
+    echo -e "${B}Rules:${N}"
+    grep -v '^#' "$RULES" 2>/dev/null | grep '|' | while IFS='|' read -r ssid prof; do
+        printf "  %-30s %s\n" "$ssid" "$prof"
+    done
+}
+
+status() {
+    local ssid=$(current_ssid)
+    if [[ -z "$ssid" ]]; then
+        echo -e "${Y}No WiFi${N}"
+    else
+        local profile=$(lookup_ssid "$ssid")
+        echo -e "${C}SSID:${N}     $ssid"
+        echo -e "${C}Profile:${N}  ${M}$profile${N}"
+    fi
+    echo -e "${C}Hook:${N}     $([[ -f $HOOK ]] && echo -e ${G}installed${N} || echo -e ${Y}not installed${N})"
+}
+
+case "${1:-status}" in
+    auto-on|install)   install_hook ;;
+    auto-off|uninstall) remove_hook ;;
+    add)               shift; add_rule "$@" ;;
+    rm|remove)         shift; rm_rule "$@" ;;
+    list|ls)           list_rules ;;
+    apply)             apply_ssid ;;
+    apply-ssid)        shift; apply_ssid "$@" ;;
+    status|*)          [[ "${1:-}" == "help" || "${1:-}" == "--help" ]] && usage || status ;;
+esac

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=BalOS · Stealth Mode
+Comment=Enable Tor + DNSCrypt + MAC randomization
+Exec=kitty -T balstealth -e bash -c 'sudo balstealth on; echo; read -p "Press enter to close..."'
+Icon=network-vpn
+Terminal=false
+Categories=Network;Security;
+Keywords=balos;stealth;tor;anonymous;vpn;

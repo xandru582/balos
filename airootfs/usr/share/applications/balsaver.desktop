@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=BalOS · Battery Saver
+Comment=Extreme power-saving profile
+Exec=pkexec balsaver
+Icon=battery
+Terminal=false
+Categories=Settings;HardwareSettings;
+Keywords=balos;battery;power;save;

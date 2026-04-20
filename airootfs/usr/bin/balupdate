@@ -1,0 +1,163 @@
+#!/usr/bin/env bash
+# balupdate — snapshot-backed system update with easy rollback
+set -euo pipefail
+
+G='\033[0;32m'; C='\033[0;36m'; Y='\033[1;33m'; R='\033[0;31m'; M='\033[0;35m'
+B='\033[1m'; D='\033[2m'; N='\033[0m'
+
+usage() {
+cat << EOF
+${C}${B}balupdate${N} — safe system update (snapshot before, rollback if broken)
+
+  ${C}now${N}                 Snapshot → update → update flatpaks
+  ${C}check${N}               Show pending updates (no changes)
+  ${C}list-snapshots${N}      Show snapper snapshots
+  ${C}rollback [#]${N}        Rollback to previous snapshot (or specific #)
+  ${C}clean${N}               Remove old snapshots + pacman cache
+  ${C}auto-on${N}              Enable auto-updates (systemd timer, weekly)
+  ${C}auto-off${N}             Disable auto-updates
+
+EOF
+}
+
+[[ $EUID -ne 0 ]] && [[ "${1:-}" =~ ^(now|rollback|clean|auto-) ]] && exec sudo "$0" "$@"
+
+has_snapper() { command -v snapper &>/dev/null && snapper list-configs 2>/dev/null | grep -q root; }
+
+snapshot_pre() {
+    if has_snapper; then
+        NUM=$(snapper create -d "balupdate pre-update" -p)
+        echo "$NUM" > /tmp/balupdate-pre-snap
+        echo -e "${G}✓ snapshot ${NUM} created${N}"
+    else
+        echo -e "${Y}(no snapper; skipping snapshot)${N}"
+    fi
+}
+
+snapshot_post() {
+    if has_snapper && [[ -f /tmp/balupdate-pre-snap ]]; then
+        snapper create -d "balupdate post-update" -p >/dev/null
+        rm -f /tmp/balupdate-pre-snap
+    fi
+}
+
+check_updates() {
+    echo -e "${C}${B}▸ checking pacman...${N}"
+    checkupdates 2>/dev/null | sed 's/^/  /' || echo "  (nothing pending)"
+    if command -v flatpak &>/dev/null; then
+        echo -e "\n${C}${B}▸ checking flatpak...${N}"
+        flatpak remote-ls --updates 2>/dev/null | sed 's/^/  /' || echo "  (nothing pending)"
+    fi
+}
+
+do_update() {
+    echo -e "${C}${B}▸ BalOS update starting...${N}\n"
+    snapshot_pre
+
+    # Refresh mirrors (fastest first)
+    if command -v reflector &>/dev/null; then
+        echo -e "${C}▸ refreshing mirrorlist...${N}"
+        reflector --country "United States,Germany,France,Netherlands,Spain" \
+            --latest 20 --protocol https --sort rate \
+            --save /etc/pacman.d/mirrorlist 2>/dev/null &
+    fi
+
+    # Pacman
+    echo -e "${C}${B}▸ pacman -Syu${N}"
+    pacman -Syu --noconfirm || {
+        echo -e "${R}${B}UPDATE FAILED — rolling back${N}"
+        do_rollback
+        exit 1
+    }
+
+    # Keyring
+    pacman -S --needed --noconfirm archlinux-keyring 2>/dev/null || true
+
+    # Flatpak
+    if command -v flatpak &>/dev/null; then
+        echo -e "${C}${B}▸ flatpak update${N}"
+        flatpak update -y 2>/dev/null || true
+    fi
+
+    # Firmware
+    if command -v fwupdmgr &>/dev/null; then
+        echo -e "${C}${B}▸ firmware check${N}"
+        fwupdmgr refresh --force 2>/dev/null || true
+        fwupdmgr get-updates 2>/dev/null | head -3
+    fi
+
+    # Rebuild BalKernel if source dir exists
+    if [[ -d /usr/share/balos/kernel ]]; then
+        echo -e "${D}  (balkernel recompile: run 'bal kernel build' separately)${N}"
+    fi
+
+    snapshot_post
+
+    echo -e "\n${G}${B}✓ Update complete${N}"
+    echo -e "  Rollback with: ${C}bal update rollback${N}"
+}
+
+do_rollback() {
+    has_snapper || { echo -e "${R}snapper not configured${N}"; exit 1; }
+    local target="${1:-}"
+    if [[ -z "$target" ]]; then
+        target=$(snapper list | awk '/pre-update/{print $1}' | tail -1)
+        [[ -z "$target" ]] && { echo "no pre-update snapshot found"; exit 1; }
+    fi
+    echo -e "${Y}${B}▸ rolling back to snapshot ${target}...${N}"
+    snapper rollback "$target"
+    echo -e "${G}✓ rollback staged — reboot to apply${N}"
+}
+
+clean_old() {
+    has_snapper && snapper cleanup timeline 2>/dev/null
+    pacman -Scc --noconfirm
+    if command -v paccache &>/dev/null; then
+        paccache -rk 2
+    fi
+    journalctl --vacuum-time=2weeks 2>/dev/null
+    echo -e "${G}✓ cleaned${N}"
+}
+
+auto_on() {
+    cat > /etc/systemd/system/balupdate.timer << 'UNIT'
+[Unit]
+Description=BalOS weekly auto-update
+[Timer]
+OnCalendar=Sun 03:00
+RandomizedDelaySec=1h
+Persistent=true
+[Install]
+WantedBy=timers.target
+UNIT
+    cat > /etc/systemd/system/balupdate.service << 'UNIT'
+[Unit]
+Description=BalOS auto-update
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/balupdate now
+UNIT
+    systemctl daemon-reload
+    systemctl enable --now balupdate.timer
+    echo -e "${G}✓ auto-update enabled (Sundays 03:00 +random)${N}"
+}
+
+auto_off() {
+    systemctl disable --now balupdate.timer 2>/dev/null || true
+    rm -f /etc/systemd/system/balupdate.{timer,service}
+    systemctl daemon-reload
+    echo -e "${Y}▸ auto-update disabled${N}"
+}
+
+case "${1:-help}" in
+    now|upgrade)         do_update ;;
+    check|pending)       check_updates ;;
+    list-snapshots|ls)   snapper list 2>/dev/null || echo "snapper not installed" ;;
+    rollback)            shift; do_rollback "$@" ;;
+    clean)               clean_old ;;
+    auto-on)             auto_on ;;
+    auto-off)            auto_off ;;
+    help|-h|--help|*)    usage ;;
+esac

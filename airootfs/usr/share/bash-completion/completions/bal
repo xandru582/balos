@@ -1,0 +1,45 @@
+# BalOS bash completion
+_bal() {
+    local cur prev
+    COMPREPLY=()
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD-1]}"
+
+    local commands="boost saver balance status monitor shield stealth vault sandbox clip panic rescue vpn net geo hack recon pwn watch update init kernel help version"
+
+    case "${prev}" in
+        bal)
+            COMPREPLY=( $(compgen -W "$commands" -- "$cur") ); return 0 ;;
+        shield)
+            COMPREPLY=( $(compgen -W "off normal armor fortress status" -- "$cur") ); return 0 ;;
+        stealth)
+            COMPREPLY=( $(compgen -W "on off status mac test leaks" -- "$cur") ); return 0 ;;
+        hack)
+            COMPREPLY=( $(compgen -W "recon web wifi reverse forensics crack osint menu" -- "$cur") ); return 0 ;;
+        panic)
+            COMPREPLY=( $(compgen -W "soft hard nuclear status" -- "$cur") ); return 0 ;;
+        vault)
+            COMPREPLY=( $(compgen -W "init add get list rm edit sync lock unlock gen" -- "$cur") ); return 0 ;;
+        pwn)
+            COMPREPLY=( $(compgen -W "listen gen encode stage" -- "$cur") ); return 0 ;;
+        geo)
+            COMPREPLY=( $(compgen -W "auto-on auto-off add list status" -- "$cur") ); return 0 ;;
+        sandbox)
+            COMPREPLY=( $(compgen -W "firefox chromium brave thunderbird steam discord burpsuite custom" -- "$cur") ); return 0 ;;
+        clip)
+            COMPREPLY=( $(compgen -W "add list get rm purge" -- "$cur") ); return 0 ;;
+        vpn)
+            COMPREPLY=( $(compgen -W "up down status" -- "$cur") ); return 0 ;;
+        net)
+            COMPREPLY=( $(compgen -W "ip iface speed ports conns dns scan connect monitor managed mac flush proxy vpn nmap help" -- "$cur") ); return 0 ;;
+        update)
+            COMPREPLY=( $(compgen -W "now rollback list-snapshots clean" -- "$cur") ); return 0 ;;
+        watch)
+            COMPREPLY=( $(compgen -W "start stop status log" -- "$cur") ); return 0 ;;
+        kernel)
+            COMPREPLY=( $(compgen -W "build install status" -- "$cur") ); return 0 ;;
+    esac
+
+    return 0
+}
+complete -F _bal bal

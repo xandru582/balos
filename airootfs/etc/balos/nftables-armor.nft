@@ -1,0 +1,24 @@
+#!/usr/bin/nft -f
+# BalOS ARMOR firewall — inbound blocked, outbound rate-limited
+flush ruleset
+
+table inet armor {
+    chain input {
+        type filter hook input priority 0; policy drop;
+        iif lo accept
+        ct state { established, related } accept
+        ct state invalid drop
+        ip6 nexthdr icmpv6 icmpv6 type {
+            nd-neighbor-solicit, nd-neighbor-advert,
+            nd-router-advert, packet-too-big
+        } accept
+        # Drop all new inbound silently
+        ct state new drop
+    }
+    chain forward { type filter hook forward priority 0; policy drop; }
+    chain output {
+        type filter hook output priority 0; policy accept;
+        # Rate limit outbound to 200/sec (stops mass scans leaking)
+        ct state new limit rate 200/second accept
+    }
+}

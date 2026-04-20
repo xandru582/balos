@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=BalOS · Monitor
+Comment=Real-time system dashboard
+Exec=kitty -T balmonitor -e balmonitor
+Icon=utilities-system-monitor
+Terminal=false
+Categories=System;Monitor;
+Keywords=balos;monitor;system;cpu;gpu;battery;network;

@@ -1,0 +1,221 @@
+#!/usr/bin/env bash
+# balpanic — tiered emergency sanitization
+# soft   : lock + clipboard + history (reversible, fast)
+# hard   : soft + kill apps + MAC change + firewall fortress + swap wipe
+# nuclear: hard + shred caches + RAM wipe + encrypted /home force-unmount
+set -euo pipefail
+
+R='\033[0;31m'; Y='\033[1;33m'; G='\033[0;32m'; C='\033[0;36m'; M='\033[0;35m'
+B='\033[1m'; D='\033[2m'; N='\033[0m'
+
+LEVEL="${1:-hard}"
+[[ "$LEVEL" == "help" || "$LEVEL" == "-h" || "$LEVEL" == "--help" ]] && {
+cat << EOF
+${R}${B}balpanic${N} — emergency sanitization
+
+  balpanic ${C}soft${N}       Lock screen + clear clipboard + wipe shell history
+                   ${D}Reversible, <1 sec${N}
+  balpanic ${C}hard${N}       Soft + kill apps + MAC rotate + fortress FW + swap
+                   ${D}Disruptive, ~3 sec  (default)${N}
+  balpanic ${C}nuclear${N}    Hard + RAM wipe + shred tmp + force-unmount /home
+                   ${D}Maximum purge, ~10 sec, will log you out${N}
+
+${B}Tip:${N} bind to a hotkey via KDE: Meta+Shift+P → balpanic hard
+EOF
+exit 0; }
+
+case "$LEVEL" in
+    soft|hard|nuclear) ;;
+    *) echo "bad level: $LEVEL (use soft|hard|nuclear)"; exit 1 ;;
+esac
+
+[[ $EUID -ne 0 ]] && exec sudo "$0" "$LEVEL"
+
+echo -e "${R}${B}"
+cat << 'EOF'
+   ____  ____  _   _ _____ ____
+  |  _ \|  _ \| \ | |_ _/ ___|
+  | |_) | |_) |  \| || | |
+  |  __/|  _ <| |\  || | |___
+  |_|   |_| \_\_| \_|___\____|
+EOF
+echo -e "${N}${R}       LEVEL: ${B}${LEVEL}${N}\n"
+
+USER_NAME="$(logname 2>/dev/null || echo "")"
+USER_HOME=""
+[[ -n "$USER_NAME" ]] && USER_HOME=$(eval echo "~$USER_NAME")
+
+step() { echo -e "  ${G}✓${N} $*"; }
+warn() { echo -e "  ${Y}!${N} $*"; }
+
+# ═══ SOFT TIER ══════════════════════════════════════════════════
+do_soft() {
+    # 1. Lock sessions IMMEDIATELY
+    loginctl lock-sessions 2>/dev/null || true
+    step "sessions locked"
+
+    # 2. Clipboard
+    if [[ -n "$USER_NAME" ]]; then
+        runuser -u "$USER_NAME" -- wl-copy --clear 2>/dev/null || true
+        runuser -u "$USER_NAME" -- xclip -selection clipboard -i /dev/null 2>/dev/null || true
+        runuser -u "$USER_NAME" -- qdbus6 org.kde.klipper /klipper clearClipboardHistory 2>/dev/null || true
+    fi
+    step "clipboard cleared"
+
+    # 3. Shell histories
+    for user_home in /root /home/*; do
+        [[ -d "$user_home" ]] || continue
+        for f in .bash_history .zsh_history .python_history .node_repl_history \
+                 .lesshst .viminfo .sqlite_history .mysql_history .psql_history; do
+            : > "$user_home/$f" 2>/dev/null || true
+        done
+        rm -f "$user_home/.local/share/nvim/shada/main.shada" 2>/dev/null
+    done
+    step "shell histories wiped"
+
+    # 4. Recent files
+    for base in /root /home/*; do
+        [[ -d "$base" ]] || continue
+        rm -f "$base/.local/share/recently-used.xbel" 2>/dev/null
+        rm -f "$base"/.local/share/RecentDocuments/*.desktop 2>/dev/null
+        rm -f "$base"/.local/share/user-places.xbel.tbcache 2>/dev/null
+    done
+    step "recent files cleared"
+
+    # 5. DNS flush
+    resolvectl flush-caches 2>/dev/null || true
+    systemctl reload dnscrypt-proxy 2>/dev/null || true
+    step "DNS cache flushed"
+}
+
+# ═══ HARD TIER ══════════════════════════════════════════════════
+do_hard() {
+    # 1. Kill sensitive apps
+    local killed=0
+    for app in firefox chromium chrome brave thunderbird signal-desktop telegram-desktop \
+               discord element slack zoom skype teams \
+               burpsuite zaproxy wireshark ghidra cutter radare2 metasploit msfconsole \
+               steam lutris heroic bottles playonlinux \
+               bitwarden keepassxc gnome-keyring kwallet \
+               obsidian notion anytype logseq joplin; do
+        if pkill -9 -f "$app" 2>/dev/null; then
+            killed=$((killed+1))
+        fi
+    done
+    step "killed $killed app processes"
+
+    # 2. Kill all SSH sessions & tmux (might contain sensitive info)
+    pkill -9 -x ssh 2>/dev/null || true
+    pkill -9 -x tmux 2>/dev/null || true
+    pkill -9 -x screen 2>/dev/null || true
+    step "ssh/tmux/screen terminated"
+
+    # 3. Flush browser caches
+    for base in /home/*; do
+        [[ -d "$base" ]] || continue
+        rm -rf "$base/.cache/mozilla" "$base/.cache/chromium" "$base/.cache/google-chrome" \
+               "$base/.cache/BraveSoftware" 2>/dev/null
+    done
+    step "browser caches purged"
+
+    # 4. Swap rotation
+    if swapon --show 2>/dev/null | grep -q .; then
+        swapoff -a
+        swapon -a
+        step "swap rotated"
+    fi
+
+    # 5. Drop kernel caches
+    sync
+    echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
+    step "kernel caches dropped"
+
+    # 6. MAC randomization
+    for iface in $(ip -o link show | awk -F': ' '{print $2}' | grep -Ev '^(lo|wg|tun|docker|virbr|vnet|br-)'); do
+        ip link set "$iface" down 2>/dev/null || continue
+        macchanger -r "$iface" &>/dev/null || true
+        ip link set "$iface" up 2>/dev/null
+        step "MAC randomized: $iface"
+    done
+
+    # 7. Cycle network for fresh DHCP
+    nmcli networking off 2>/dev/null || true
+    sleep 1
+    nmcli networking on 2>/dev/null || true
+    step "network re-cycled"
+
+    # 8. Firewall fortress
+    balshield fortress &>/dev/null || true
+    step "firewall → fortress"
+
+    # 9. Stop pentest services
+    for svc in docker postgresql mysql mariadb apache2 nginx sshd metasploit; do
+        systemctl stop "$svc" 2>/dev/null || true
+    done
+    step "background services stopped"
+}
+
+# ═══ NUCLEAR TIER ═══════════════════════════════════════════════
+do_nuclear() {
+    warn "NUCLEAR TIER — will terminate all user sessions"
+
+    # 1. Shred tmp files
+    find /tmp /var/tmp -maxdepth 2 -type f \( -name "*.log" -o -name "*.swp" -o -name "*.tmp" -o -name "core.*" \) -exec shred -zfu {} \; 2>/dev/null
+    rm -rf /tmp/* /var/tmp/* 2>/dev/null || true
+    step "tmp files shredded"
+
+    # 2. Shred user cache dirs
+    for base in /home/*; do
+        rm -rf "$base/.cache"/{thumbnails,pip,yarn,npm,go-build} 2>/dev/null
+    done
+    step "user caches cleared"
+
+    # 3. Journal purge
+    journalctl --rotate 2>/dev/null
+    journalctl --vacuum-time=1s 2>/dev/null
+    step "systemd journal vacuumed"
+
+    # 4. Call balrescue to wipe RAM
+    if command -v balrescue &>/dev/null; then
+        balrescue wipe-ram 2>&1 | grep -E '✓|▸' || true
+        step "RAM wiped (balrescue)"
+    fi
+
+    # 5. Kill ALL user processes
+    if [[ -n "$USER_NAME" ]]; then
+        loginctl terminate-user "$USER_NAME" 2>/dev/null || true
+        step "user session terminated"
+    fi
+
+    # 6. Unmount encrypted home if separate
+    if mountpoint -q /home 2>/dev/null && [[ "$(findmnt -n -o FSTYPE /home)" != "btrfs" ]]; then
+        umount -l /home 2>/dev/null && step "/home unmounted" || warn "/home busy"
+    fi
+
+    # 7. Log it
+    logger -t balpanic "NUCLEAR panic triggered by uid=$SUDO_UID"
+}
+
+# ═══ DISPATCH ═══════════════════════════════════════════════════
+START=$(date +%s)
+
+case "$LEVEL" in
+    soft)
+        do_soft
+        ;;
+    hard)
+        do_soft
+        do_hard
+        ;;
+    nuclear)
+        do_soft
+        do_hard
+        do_nuclear
+        ;;
+esac
+
+ELAPSED=$(( $(date +%s) - START ))
+
+echo -e "\n${R}${B}  ✓ Sanitized [${LEVEL}] in ${ELAPSED}s${N}"
+[[ "$LEVEL" == "nuclear" ]] && echo -e "  ${Y}System will now log out.${N}"
+echo -e "  ${D}Unlock session to resume.${N}\n"

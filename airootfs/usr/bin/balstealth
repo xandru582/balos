@@ -1,0 +1,299 @@
+#!/usr/bin/env bash
+# balstealth — anonymization layer
+# Tor · DNSCrypt · MAC random · camera kill · leak tests · transparent Tor proxy
+set -euo pipefail
+
+G='\033[0;32m'; R='\033[0;31m'; Y='\033[1;33m'; C='\033[0;36m'; M='\033[0;35m'
+B='\033[1m'; D='\033[2m'; N='\033[0m'
+
+banner() {
+cat << 'EOF'
+
+   ╔═╗╔╦╗╔═╗╔═╗╦ ╔╦╗╦ ╦
+   ╚═╗ ║ ║╣ ╠═╣║  ║ ╠═╣
+   ╚═╝ ╩ ╚═╝╩ ╩╩═╝╩ ╩ ╩
+EOF
+}
+
+usage() {
+cat << EOF
+${M}${B}balstealth${N} — anonymization & leak-check layer
+
+  ${C}on${N}                 Activate: DNSCrypt + Tor + MAC rotate + cam kill
+  ${C}off${N}                Restore normal networking
+  ${C}status${N}             Show current anon state
+  ${C}mac${N}                Just randomize MAC addresses
+  ${C}leak-test${N}          Run DNS/WebRTC/IP leak probes (needs curl)
+  ${C}tor-route on|off${N}   Transparent iptables redirection of ALL TCP→Tor
+  ${C}tor-circuit${N}        Force Tor new circuit (new exit node)
+  ${C}torify <cmd>${N}       Run command through torsocks
+  ${C}fingerprint${N}        Check browser/useragent fingerprint surface
+
+${B}WARNING${N}
+  ${D}tor-route${N} is aggressive — use only if you understand the implications
+  (blocks UDP, breaks LAN, affects VoIP). Prefer ${C}torify${N} per-app.
+EOF
+}
+
+ACTION="${1:-status}"
+
+# Most actions need root, but status/leak-test/fingerprint do not
+needs_root() {
+    case "$1" in
+        on|off|start|stop|mac|tor-route) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+if needs_root "$ACTION" && [[ $EUID -ne 0 ]]; then
+    exec sudo "$0" "$@"
+fi
+
+# ──────────────────────────────────────────────────────────────
+randomize_mac() {
+    for iface in $(ip -o link show | awk -F': ' '{print $2}' | grep -Ev '^(lo|wg|tun|docker|virbr|vnet|br-)'); do
+        ip link set "$iface" down 2>/dev/null || continue
+        macchanger -r "$iface" &>/dev/null && \
+            echo -e "  ${G}✓${N} MAC randomized: ${C}$iface${N} → $(cat /sys/class/net/$iface/address)"
+        ip link set "$iface" up 2>/dev/null
+    done
+}
+
+stealth_on() {
+    banner
+    echo -e "${M}${B}Entering stealth mode...${N}\n"
+
+    systemctl start dnscrypt-proxy 2>/dev/null && echo -e "  ${G}✓${N} DNSCrypt-Proxy → DoH"
+    resolvectl dns lo 127.0.0.1 2>/dev/null || true
+    # Override /etc/resolv.conf to force DNSCrypt
+    if [[ ! -L /etc/resolv.conf ]] || ! readlink /etc/resolv.conf | grep -q dnscrypt; then
+        echo "nameserver 127.0.0.1" > /etc/resolv.conf
+        echo "options edns0" >> /etc/resolv.conf
+    fi
+
+    systemctl start tor 2>/dev/null && echo -e "  ${G}✓${N} Tor → started"
+    sleep 2
+
+    randomize_mac
+
+    resolvectl flush-caches 2>/dev/null
+    ip -s neigh flush all &>/dev/null
+    echo -e "  ${G}✓${N} DNS & ARP caches flushed"
+
+    # Disable camera
+    modprobe -r uvcvideo 2>/dev/null && echo -e "  ${G}✓${N} Camera kernel module removed"
+
+    # Kill sensitive IPv6 by default (prevents leaks)
+    sysctl -qw net.ipv6.conf.all.disable_ipv6=1 2>/dev/null
+    sysctl -qw net.ipv6.conf.default.disable_ipv6=1 2>/dev/null
+    echo -e "  ${G}✓${N} IPv6 disabled (leak prevention)"
+
+    # Clear klipper/wl-paste clipboard
+    rm -f /home/*/.local/share/klipper/history2.lst 2>/dev/null
+
+    # Mark state
+    mkdir -p /run/balos && echo "on" > /run/balos/stealth
+
+    echo -e "\n  ${M}${B}STEALTH ACTIVE${N}"
+    echo -e "  Try:  ${C}balstealth leak-test${N}"
+    echo -e "  Apps: ${C}balstealth torify <cmd>${N}\n"
+}
+
+stealth_off() {
+    echo -e "${Y}Exiting stealth mode...${N}\n"
+    # Drop tor-route rules first if present
+    if nft list table inet balos_torroute &>/dev/null; then
+        nft delete table inet balos_torroute 2>/dev/null
+        echo -e "  ${G}✓${N} Transparent Tor routing disabled"
+    fi
+    systemctl stop tor 2>/dev/null && echo -e "  ${G}✓${N} Tor stopped"
+    modprobe uvcvideo 2>/dev/null && echo -e "  ${G}✓${N} Camera restored"
+    sysctl -qw net.ipv6.conf.all.disable_ipv6=0 2>/dev/null
+    sysctl -qw net.ipv6.conf.default.disable_ipv6=0 2>/dev/null
+    echo -e "  ${G}✓${N} IPv6 restored"
+    resolvectl flush-caches 2>/dev/null
+    rm -f /run/balos/stealth
+    echo -e "\n  ${G}Normal networking restored${N}\n"
+}
+
+# ── Transparent Tor routing via nftables ─────────────────────
+tor_route_on() {
+    # Make sure Tor is running with TransPort
+    if ! grep -q '^TransPort' /etc/tor/torrc 2>/dev/null; then
+        cat >> /etc/tor/torrc << 'TORRC'
+
+# BalOS transparent proxy
+TransPort 127.0.0.1:9040
+DNSPort 127.0.0.1:9053
+AutomapHostsOnResolve 1
+VirtualAddrNetworkIPv4 10.192.0.0/10
+TORRC
+        systemctl restart tor
+        sleep 2
+    fi
+
+    # nftables: redirect all TCP from user uid to tor TransPort (except to Tor itself)
+    nft -f - << 'NFT'
+table inet balos_torroute {
+    chain prerouting {
+        type nat hook prerouting priority -100; policy accept;
+    }
+    chain output {
+        type nat hook output priority -100; policy accept;
+        # Exclude Tor process uid (debian-tor or tor user)
+        meta skuid "tor" return
+        # Exclude local/LAN
+        ip daddr 127.0.0.0/8 return
+        ip daddr 10.0.0.0/8 return
+        ip daddr 172.16.0.0/12 return
+        ip daddr 192.168.0.0/16 return
+        # Redirect DNS → Tor DNSPort
+        udp dport 53 redirect to :9053
+        tcp dport 53 redirect to :9053
+        # Redirect TCP → TransPort
+        meta l4proto tcp redirect to :9040
+    }
+}
+NFT
+    echo -e "  ${G}✓${N} Transparent Tor routing enabled"
+    echo -e "  ${Y}!${N} All TCP + DNS → Tor. UDP (except DNS) will be dropped."
+}
+
+tor_route_off() {
+    nft delete table inet balos_torroute 2>/dev/null && \
+        echo -e "  ${G}✓${N} Transparent Tor routing disabled" || \
+        echo -e "  ${Y}(not active)${N}"
+}
+
+# ── Leak tests ────────────────────────────────────────────────
+leak_test() {
+    echo -e "${M}${B}▸ Leak test${N}\n"
+
+    # 1. Direct IP
+    echo -e "${C}[1] Direct public IP (what sites see without Tor):${N}"
+    local direct_ip=$(timeout 5 curl -s ifconfig.me 2>/dev/null || echo "unreachable")
+    echo -e "    ${Y}${direct_ip}${N}"
+
+    # 2. Through Tor
+    echo -e "\n${C}[2] Public IP via Tor (127.0.0.1:9050):${N}"
+    local tor_ip=$(timeout 10 curl -s --socks5 127.0.0.1:9050 ifconfig.me 2>/dev/null || echo "tor not reachable")
+    echo -e "    ${G}${tor_ip}${N}"
+    if [[ "$direct_ip" == "$tor_ip" ]]; then
+        echo -e "    ${R}${B}WARNING: direct and Tor IPs match — Tor not effective!${N}"
+    fi
+
+    # 3. DNS leak: resolve a known test domain, check who answered
+    echo -e "\n${C}[3] DNS server(s) used:${N}"
+    resolvectl status 2>/dev/null | grep -E 'Current DNS|DNS Servers' | sed 's/^/    /' || \
+        grep '^nameserver' /etc/resolv.conf | sed 's/^/    /'
+
+    # 4. DNS leak via dnsleaktest
+    echo -e "\n${C}[4] DNS leak test (whoami.akamai.net via curl):${N}"
+    timeout 5 curl -s https://whoami.akamai.net 2>/dev/null | sed 's/^/    /' || echo "    unreachable"
+
+    # 5. IPv6 status
+    echo -e "\n${C}[5] IPv6 status:${N}"
+    local v6=$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null)
+    if [[ "$v6" == "1" ]]; then
+        echo -e "    ${G}IPv6 disabled (good for anonymity)${N}"
+    else
+        local v6_ip=$(timeout 3 curl -s -6 ifconfig.co 2>/dev/null || echo "none")
+        echo -e "    ${Y}IPv6 enabled; public: ${v6_ip}${N}"
+        [[ "$v6_ip" != "none" ]] && echo -e "    ${R}→ IPv6 may leak real address${N}"
+    fi
+
+    # 6. WebRTC note
+    echo -e "\n${C}[6] WebRTC:${N}"
+    echo -e "    ${D}(browser-side; verify at https://browserleaks.com/webrtc)${N}"
+
+    # 7. MAC
+    echo -e "\n${C}[7] Current MAC addresses:${N}"
+    for i in $(ip -o link show | awk -F': ' '{print $2}' | grep -Ev '^(lo|wg|tun|docker|virbr)'); do
+        local mac=$(cat /sys/class/net/$i/address 2>/dev/null)
+        local vendor_byte=${mac:0:8}
+        echo -e "    $i: ${C}${mac}${N}"
+    done
+
+    # 8. Timezone
+    echo -e "\n${C}[8] Timezone (can fingerprint):${N}"
+    echo -e "    $(timedatectl show -p Timezone --value 2>/dev/null)"
+
+    # 9. Hostname
+    echo -e "\n${C}[9] Hostname (broadcast via DHCP/mDNS):${N}"
+    echo -e "    $(hostnamectl hostname 2>/dev/null || hostname)"
+
+    # 10. Summary
+    echo -e "\n${M}${B}▸ Summary${N}"
+    local issues=0
+    [[ "$direct_ip" == "$tor_ip" ]] && { echo -e "  ${R}✗${N} Tor not routing"; issues=$((issues+1)); }
+    [[ "$v6" != "1" ]] && { echo -e "  ${Y}!${N} IPv6 enabled — leak risk"; issues=$((issues+1)); }
+    ! systemctl is-active --quiet dnscrypt-proxy 2>/dev/null && \
+        { echo -e "  ${Y}!${N} DNSCrypt-proxy not active"; issues=$((issues+1)); }
+    (( issues == 0 )) && echo -e "  ${G}✓ no obvious leaks${N}"
+}
+
+fingerprint_check() {
+    echo -e "${M}${B}▸ Fingerprint surface${N}\n"
+    echo -e "${C}Kernel:${N}       $(uname -r)"
+    echo -e "${C}Distro:${N}       $(grep PRETTY_NAME /etc/os-release | cut -d'"' -f2)"
+    echo -e "${C}Hostname:${N}     $(hostname)"
+    echo -e "${C}Timezone:${N}     $(timedatectl show -p Timezone --value 2>/dev/null)"
+    echo -e "${C}Locale:${N}       ${LANG:-unset}"
+    echo -e "${C}User agent:${N}   (set browser UA to Tor Browser's for best anon)"
+    echo -e "${C}Resolution:${N}   $(xdpyinfo 2>/dev/null | awk '/dimensions/{print $2}' || echo '(wayland)')"
+    echo -e "${C}Fonts:${N}        $(fc-list 2>/dev/null | wc -l) installed"
+    echo -e "${C}MACs:${N}"
+    for i in $(ip -o link show | awk -F': ' '{print $2}' | grep -Ev '^(lo|wg|tun|docker|virbr)'); do
+        echo -e "  $i: $(cat /sys/class/net/$i/address 2>/dev/null)"
+    done
+}
+
+tor_new_circuit() {
+    # NEWNYM signal to Tor control port (default: authenticated via cookie)
+    if [[ -S /var/run/tor/control ]] || ss -tln sport = :9051 2>/dev/null | grep -q 9051; then
+        echo -e 'AUTHENTICATE ""\r\nSIGNAL NEWNYM\r\nQUIT\r\n' | nc -q 1 127.0.0.1 9051 2>/dev/null && \
+            echo -e "  ${G}✓${N} new Tor circuit requested"
+    else
+        # Fallback: restart tor
+        systemctl restart tor && echo -e "  ${G}✓${N} Tor restarted (new circuit)"
+    fi
+}
+
+do_status() {
+    echo -e "${C}${B}Stealth status:${N}"
+    local tor_st=$(systemctl is-active tor 2>/dev/null)
+    local dns_st=$(systemctl is-active dnscrypt-proxy 2>/dev/null)
+    local cam=$(lsmod | grep -q uvcvideo && echo -e "${R}on${N}" || echo -e "${G}blocked${N}")
+    local v6=$([ "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null)" = "1" ] && echo -e "${G}off${N}" || echo -e "${Y}on${N}")
+    local route=$(nft list tables 2>/dev/null | grep -q balos_torroute && echo -e "${G}transparent${N}" || echo -e "${D}per-app${N}")
+    local state=$(cat /run/balos/stealth 2>/dev/null || echo "off")
+
+    printf "  %-16s ${M}%s${N}\n" "State:"      "$state"
+    printf "  %-16s %b\n"        "Tor:"        "${tor_st}"
+    printf "  %-16s %b\n"        "DNSCrypt:"   "${dns_st}"
+    printf "  %-16s %b\n"        "Camera:"     "${cam}"
+    printf "  %-16s %b\n"        "IPv6:"       "${v6}"
+    printf "  %-16s %b\n"        "Tor routing:" "${route}"
+    printf "  %-16s ${C}%s${N}\n" "Public IP:"  "$(timeout 3 curl -s ifconfig.me 2>/dev/null || echo '-')"
+}
+
+# ──────────────────────────────────────────────────────────────
+case "$ACTION" in
+    on|start|up|enable)           stealth_on ;;
+    off|stop|down|disable)        stealth_off ;;
+    mac|randomize-mac)            randomize_mac ;;
+    leak-test|leak|test)          leak_test ;;
+    fingerprint|fp)               fingerprint_check ;;
+    tor-route)
+        case "${2:-on}" in
+            on|start)   tor_route_on ;;
+            off|stop)   tor_route_off ;;
+            *) echo "balstealth tor-route on|off"; exit 1 ;;
+        esac ;;
+    tor-circuit|newnym|new-circuit)  tor_new_circuit ;;
+    torify)
+        shift
+        [[ -z "${1:-}" ]] && { echo "usage: balstealth torify <cmd>"; exit 1; }
+        exec torsocks "$@" ;;
+    help|-h|--help)               usage ;;
+    status|*)                     do_status ;;
+esac

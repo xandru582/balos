@@ -1,0 +1,373 @@
+#!/usr/bin/env bash
+# balos-install — TUI installer for BalOS
+# Features: dialog menus · auto-TZ (via IP) · NVIDIA detect · LUKS2 · btrfs subvols
+#           · snapper · systemd-boot · full firstboot setup
+set -euo pipefail
+
+G='\033[0;32m'; R='\033[0;31m'; Y='\033[1;33m'; C='\033[0;36m'; M='\033[0;35m'
+B='\033[1m'; D='\033[2m'; N='\033[0m'
+
+[[ $EUID -ne 0 ]] && exec sudo "$0" "$@"
+
+# Require booted from BalOS Live
+[[ ! -d /run/archiso ]] && ! grep -q "balos" /etc/os-release 2>/dev/null && {
+    echo "This installer runs from the BalOS Live ISO only."
+    exit 1
+}
+
+command -v dialog &>/dev/null || {
+    echo "dialog not found; installing..."
+    pacman -Sy --noconfirm dialog
+}
+
+export DIALOGRC=/tmp/balos-dialogrc
+cat > "$DIALOGRC" << 'DRC'
+use_shadow = OFF
+use_colors = ON
+screen_color = (GREEN,BLACK,ON)
+dialog_color = (GREEN,BLACK,OFF)
+title_color = (GREEN,BLACK,ON)
+border_color = (GREEN,BLACK,ON)
+border2_color = (GREEN,BLACK,OFF)
+button_active_color = (BLACK,GREEN,ON)
+button_inactive_color = (GREEN,BLACK,OFF)
+button_key_active_color = (BLACK,GREEN,ON)
+button_key_inactive_color = (GREEN,BLACK,OFF)
+button_label_active_color = (BLACK,GREEN,ON)
+button_label_inactive_color = (GREEN,BLACK,OFF)
+inputbox_color = (GREEN,BLACK,OFF)
+menubox_color = (GREEN,BLACK,OFF)
+menubox_border_color = (GREEN,BLACK,ON)
+item_color = (GREEN,BLACK,OFF)
+item_selected_color = (BLACK,GREEN,ON)
+tag_color = (GREEN,BLACK,ON)
+tag_selected_color = (BLACK,GREEN,ON)
+check_color = (GREEN,BLACK,OFF)
+check_selected_color = (BLACK,GREEN,ON)
+gauge_color = (GREEN,BLACK,ON)
+DRC
+
+DIALOG() { dialog --backtitle "BalOS Installer · $(date +%H:%M)" --colors "$@"; }
+
+# ═══ welcome ════════════════════════════════════════════════════
+DIALOG --title " Welcome " --msgbox "\n\Z2\Zb   BalOS Installer\Zn\n\nhack · play · evade · endure\n\nThis will wipe a disk and install BalOS.\n\n\Z3Make sure your data is backed up.\Zn\n" 14 60
+
+# ═══ disk selection ════════════════════════════════════════════
+DISKS=()
+while read -r n s; do
+    [[ "$n" =~ ^(sd|nvme|vd) ]] || continue
+    DISKS+=("/dev/$n" "$s")
+done < <(lsblk -dn -o NAME,SIZE -e 7,11)
+
+[[ ${#DISKS[@]} -eq 0 ]] && { DIALOG --msgbox "No disks found" 6 40; exit 1; }
+
+DISK=$(DIALOG --title " Target disk " --menu \
+    "Choose the disk to install BalOS on.\n\Z1ALL DATA WILL BE ERASED.\Zn" \
+    15 60 8 "${DISKS[@]}" 3>&1 1>&2 2>&3) || exit 0
+
+# ═══ encryption ════════════════════════════════════════════════
+if DIALOG --title " Disk encryption " --yesno \
+    "\nEnable \Z2LUKS2\Zn full-disk encryption?\n\nStrongly recommended for laptops." 10 60; then
+    USE_LUKS=1
+    while :; do
+        LUKS_PASS=$(DIALOG --title " LUKS passphrase " --insecure --passwordbox \
+            "Enter disk encryption passphrase (min 8 chars):" 10 60 3>&1 1>&2 2>&3) || exit 0
+        LUKS_PASS2=$(DIALOG --insecure --passwordbox "Repeat passphrase:" 10 60 3>&1 1>&2 2>&3) || exit 0
+        [[ "$LUKS_PASS" == "$LUKS_PASS2" ]] && [[ ${#LUKS_PASS} -ge 8 ]] && break
+        DIALOG --msgbox "Passphrases differ or too short." 6 40
+    done
+else
+    USE_LUKS=0
+fi
+
+# ═══ hostname / user ═══════════════════════════════════════════
+HOSTNAME=$(DIALOG --title " Hostname " --inputbox "System hostname:" 9 50 "balos" 3>&1 1>&2 2>&3) || exit 0
+USERNAME=$(DIALOG --title " Username "  --inputbox "Your username:"  9 50 "balos" 3>&1 1>&2 2>&3) || exit 0
+
+while :; do
+    USER_PASS=$(DIALOG --insecure --passwordbox "User password:" 9 50 3>&1 1>&2 2>&3) || exit 0
+    USER_PASS2=$(DIALOG --insecure --passwordbox "Repeat:" 9 50 3>&1 1>&2 2>&3) || exit 0
+    [[ "$USER_PASS" == "$USER_PASS2" ]] && [[ ${#USER_PASS} -ge 6 ]] && break
+    DIALOG --msgbox "Passwords differ or too short." 6 40
+done
+
+# ═══ auto-timezone (via IP geo) ════════════════════════════════
+DETECTED_TZ=$(timeout 3 curl -s https://ipapi.co/timezone 2>/dev/null || echo "UTC")
+[[ -z "$DETECTED_TZ" ]] && DETECTED_TZ="UTC"
+TZ=$(DIALOG --title " Timezone " --inputbox "Timezone (auto-detected from IP):" 9 60 "$DETECTED_TZ" 3>&1 1>&2 2>&3) || TZ="$DETECTED_TZ"
+
+# ═══ locale ═══════════════════════════════════════════════════
+LOCALE=$(DIALOG --title " Locale " --menu "Pick system locale:" 15 60 8 \
+    en_US.UTF-8 "English (US)" \
+    en_GB.UTF-8 "English (UK)" \
+    es_ES.UTF-8 "Español" \
+    de_DE.UTF-8 "Deutsch" \
+    fr_FR.UTF-8 "Français" \
+    pt_BR.UTF-8 "Português (BR)" \
+    ja_JP.UTF-8 "日本語" \
+    zh_CN.UTF-8 "简体中文" 3>&1 1>&2 2>&3) || LOCALE="en_US.UTF-8"
+
+KEYMAP=$(DIALOG --title " Keyboard " --inputbox "Console keymap (us, es, de, fr, etc):" 9 50 "us" 3>&1 1>&2 2>&3) || KEYMAP="us"
+
+# ═══ GPU detection ═════════════════════════════════════════════
+GPU_VENDOR="unknown"
+lspci -k 2>/dev/null | grep -iA2 'vga\|3d\|display' | grep -qi nvidia && GPU_VENDOR="nvidia"
+lspci -k 2>/dev/null | grep -iA2 'vga\|3d\|display' | grep -qi 'amd\|ati\|radeon' && GPU_VENDOR="amd"
+lspci -k 2>/dev/null | grep -iA2 'vga\|3d\|display' | grep -qi intel && GPU_VENDOR="intel"
+
+GPU_CHOICE=$(DIALOG --title " GPU drivers " --menu \
+    "Detected GPU vendor: \Z2${GPU_VENDOR}\Zn\n\nChoose driver stack:" 13 60 5 \
+    "auto"   "Detected: $GPU_VENDOR (recommended)" \
+    "nvidia" "nvidia-dkms + nvidia-utils" \
+    "amd"    "mesa + vulkan-radeon" \
+    "intel"  "mesa + vulkan-intel + intel-media-driver" \
+    "none"   "No GPU drivers" 3>&1 1>&2 2>&3) || GPU_CHOICE="auto"
+[[ "$GPU_CHOICE" == "auto" ]] && GPU_CHOICE="$GPU_VENDOR"
+
+# ═══ optional profiles ═════════════════════════════════════════
+PROFILES=$(DIALOG --title " Feature profiles " --checklist \
+    "Select feature bundles to install:" 17 65 8 \
+    "pentest"    "BlackArch tools (~2800 packages, +30GB)" off \
+    "gaming"     "Steam, Proton, Lutris, Wine, MangoHud"   on  \
+    "dev"        "VS Code, Docker, languages, rust, go"    on  \
+    "office"     "LibreOffice, Thunderbird, Firefox"       on  \
+    "media"      "OBS, Kdenlive, GIMP, Blender"            off \
+    "ai"         "Ollama, llama.cpp, Stable Diffusion"     off \
+    "emulation"  "Retroarch + console emulators"           off 3>&1 1>&2 2>&3) || PROFILES=""
+
+# ═══ confirmation ══════════════════════════════════════════════
+SUMMARY="
+\Z2Disk:\Zn        $DISK  (will be ERASED)
+\Z2Encryption:\Zn  $([ $USE_LUKS -eq 1 ] && echo YES || echo no)
+\Z2Hostname:\Zn    $HOSTNAME
+\Z2User:\Zn        $USERNAME
+\Z2Timezone:\Zn    $TZ
+\Z2Locale:\Zn      $LOCALE
+\Z2Keymap:\Zn      $KEYMAP
+\Z2GPU:\Zn         $GPU_CHOICE
+\Z2Profiles:\Zn    ${PROFILES:-(minimal)}
+
+\Z1Proceed with installation?\Zn"
+
+DIALOG --title " Confirm install " --yesno "$SUMMARY" 20 65 || { clear; echo "Cancelled."; exit 0; }
+
+# ═══ ALL OR NOTHING FROM HERE ══════════════════════════════════
+clear
+echo -e "${M}${B}▸ Starting BalOS installation...${N}\n"
+
+LOG=/tmp/balos-install.log
+log() { echo -e "${C}[$(date +%H:%M:%S)]${N} $*" | tee -a "$LOG"; }
+die() { echo -e "${R}${B}FATAL:${N} $*" | tee -a "$LOG"; exit 1; }
+
+# ─── 1. Partition ───────────────────────────────────────────────
+log "Partitioning $DISK ..."
+wipefs -a "$DISK"
+sgdisk --zap-all "$DISK"
+sgdisk -n 1:0:+1G  -t 1:ef00 -c 1:ESP   "$DISK"
+sgdisk -n 2:0:0    -t 2:8300 -c 2:BALOS "$DISK"
+partprobe "$DISK"
+sleep 1
+
+if [[ "$DISK" =~ nvme ]]; then
+    P1="${DISK}p1"; P2="${DISK}p2"
+else
+    P1="${DISK}1"; P2="${DISK}2"
+fi
+
+# ─── 2. Format ──────────────────────────────────────────────────
+log "Formatting..."
+mkfs.fat -F32 -n ESP "$P1"
+
+if [[ $USE_LUKS -eq 1 ]]; then
+    log "LUKS2 encrypting..."
+    echo -n "$LUKS_PASS" | cryptsetup luksFormat --type luks2 --pbkdf argon2id \
+        --iter-time 4000 --hash sha512 --key-size 512 --label BALOS_LUKS "$P2" -
+    echo -n "$LUKS_PASS" | cryptsetup open "$P2" balos_root -
+    ROOT_DEV=/dev/mapper/balos_root
+else
+    ROOT_DEV="$P2"
+fi
+
+mkfs.btrfs -f -L BalOS "$ROOT_DEV"
+
+# ─── 3. Btrfs subvols ───────────────────────────────────────────
+log "Creating btrfs subvolumes..."
+mount "$ROOT_DEV" /mnt
+btrfs subvol create /mnt/@
+btrfs subvol create /mnt/@home
+btrfs subvol create /mnt/@var
+btrfs subvol create /mnt/@log
+btrfs subvol create /mnt/@snapshots
+btrfs subvol create /mnt/@swap
+umount /mnt
+
+BTRFS_OPTS="noatime,compress=zstd:2,ssd,space_cache=v2,discard=async"
+mount -o "${BTRFS_OPTS},subvol=@"          "$ROOT_DEV" /mnt
+mkdir -p /mnt/{boot,home,var,var/log,.snapshots,swap}
+mount -o "${BTRFS_OPTS},subvol=@home"      "$ROOT_DEV" /mnt/home
+mount -o "${BTRFS_OPTS},subvol=@var"       "$ROOT_DEV" /mnt/var
+mount -o "${BTRFS_OPTS},subvol=@log"       "$ROOT_DEV" /mnt/var/log
+mount -o "${BTRFS_OPTS},subvol=@snapshots" "$ROOT_DEV" /mnt/.snapshots
+mount -o "noatime,subvol=@swap"            "$ROOT_DEV" /mnt/swap
+mount "$P1" /mnt/boot
+
+# ─── 4. Base install ────────────────────────────────────────────
+log "Installing base system (pacstrap) — this takes a while..."
+BASE_PKGS=(base base-devel linux-zen linux-zen-headers linux-firmware
+    btrfs-progs efibootmgr networkmanager vim sudo
+    intel-ucode amd-ucode reflector git zsh kitty fastfetch
+    snapper snap-pac grub-btrfs inotify-tools
+    pipewire pipewire-pulse pipewire-alsa wireplumber
+    nftables tlp auto-cpufreq powertop
+    plasma sddm konsole dolphin ark kate firefox
+    dnscrypt-proxy usbguard age wireguard-tools
+    fzf ripgrep fd bat eza starship
+)
+
+case "$GPU_CHOICE" in
+    nvidia) BASE_PKGS+=(nvidia-dkms nvidia-utils nvidia-settings libva-nvidia-driver) ;;
+    amd)    BASE_PKGS+=(mesa vulkan-radeon libva-mesa-driver mesa-vdpau) ;;
+    intel)  BASE_PKGS+=(mesa vulkan-intel intel-media-driver) ;;
+esac
+
+for p in $PROFILES; do
+    p=${p//\"/}
+    case "$p" in
+        pentest)   BASE_PKGS+=(nmap wireshark-qt metasploit sqlmap hashcat john hydra aircrack-ng) ;;
+        gaming)    BASE_PKGS+=(steam lutris gamemode mangohud wine-staging) ;;
+        dev)       BASE_PKGS+=(code docker go rust python-pip nodejs npm jdk-openjdk) ;;
+        office)    BASE_PKGS+=(libreoffice-fresh thunderbird) ;;
+        media)     BASE_PKGS+=(obs-studio kdenlive gimp blender audacity) ;;
+        ai)        BASE_PKGS+=(ollama) ;;
+        emulation) BASE_PKGS+=(retroarch dolphin-emu ppsspp) ;;
+    esac
+done
+
+pacstrap -K /mnt "${BASE_PKGS[@]}" 2>&1 | tee -a "$LOG" >/dev/null || die "pacstrap failed"
+
+# ─── 5. fstab ───────────────────────────────────────────────────
+genfstab -U /mnt >> /mnt/etc/fstab
+log "fstab generated"
+
+# Create swap file (inside @swap subvol)
+log "Creating swap file..."
+btrfs filesystem mkswapfile --size 4g --uuid clear /mnt/swap/swapfile 2>/dev/null || {
+    touch /mnt/swap/swapfile
+    chattr +C /mnt/swap/swapfile
+    dd if=/dev/zero of=/mnt/swap/swapfile bs=1M count=4096 status=progress
+    chmod 600 /mnt/swap/swapfile
+    mkswap /mnt/swap/swapfile
+}
+echo "/swap/swapfile none swap defaults 0 0" >> /mnt/etc/fstab
+
+# ─── 6. Chroot config ───────────────────────────────────────────
+log "Configuring system..."
+
+# Prepare CHROOT script as a file (heredoc in arch-chroot gets painful)
+cat > /mnt/root/chroot-setup.sh << CHROOT
+#!/bin/bash
+set -e
+
+# Time
+ln -sf /usr/share/zoneinfo/${TZ} /etc/localtime
+hwclock --systohc
+
+# Locale
+sed -i "s/^#${LOCALE}/${LOCALE}/" /etc/locale.gen
+locale-gen
+echo "LANG=${LOCALE}" > /etc/locale.conf
+echo "KEYMAP=${KEYMAP}" > /etc/vconsole.conf
+
+# Hostname
+echo "${HOSTNAME}" > /etc/hostname
+cat > /etc/hosts << HOSTS
+127.0.0.1  localhost
+::1        localhost
+127.0.1.1  ${HOSTNAME}.localdomain  ${HOSTNAME}
+HOSTS
+
+# Root pwd
+echo "root:${USER_PASS}" | chpasswd
+
+# User
+useradd -m -G wheel,audio,video,input,network,storage,power -s /bin/zsh ${USERNAME}
+echo "${USERNAME}:${USER_PASS}" | chpasswd
+echo "%wheel ALL=(ALL:ALL) ALL" > /etc/sudoers.d/wheel
+
+# mkinitcpio — add encrypt hook if LUKS
+if [[ $USE_LUKS -eq 1 ]]; then
+    sed -i 's/^HOOKS=.*/HOOKS=(base udev autodetect microcode modconf keyboard keymap consolefont block encrypt btrfs filesystems fsck)/' /etc/mkinitcpio.conf
+else
+    sed -i 's/^HOOKS=.*/HOOKS=(base udev autodetect microcode modconf keyboard keymap consolefont block btrfs filesystems fsck)/' /etc/mkinitcpio.conf
+fi
+mkinitcpio -P
+
+# Bootloader (systemd-boot)
+bootctl install
+ROOT_UUID=\$(blkid -s UUID -o value ${ROOT_DEV})
+LUKS_UUID=\$(blkid -s UUID -o value ${P2})
+
+cat > /boot/loader/loader.conf << BOOT
+default balos.conf
+timeout 3
+console-mode max
+editor no
+BOOT
+
+if [[ $USE_LUKS -eq 1 ]]; then
+    CMDLINE="rd.luks.name=\${LUKS_UUID}=balos_root root=/dev/mapper/balos_root rootflags=subvol=@ rw quiet splash mitigations=auto mem_sleep_default=deep nvme.noacpi=1"
+else
+    CMDLINE="root=UUID=\${ROOT_UUID} rootflags=subvol=@ rw quiet splash mitigations=auto mem_sleep_default=deep nvme.noacpi=1"
+fi
+
+cat > /boot/loader/entries/balos.conf << ENTRY
+title   BalOS
+linux   /vmlinuz-linux-zen
+initrd  /intel-ucode.img
+initrd  /amd-ucode.img
+initrd  /initramfs-linux-zen.img
+options \$CMDLINE
+ENTRY
+
+cat > /boot/loader/entries/balos-fallback.conf << ENTRY
+title   BalOS (fallback)
+linux   /vmlinuz-linux-zen
+initrd  /initramfs-linux-zen-fallback.img
+options \$CMDLINE
+ENTRY
+
+# Services
+systemctl enable NetworkManager sddm tlp nftables fstrim.timer \
+    systemd-timesyncd systemd-resolved || true
+
+# DNSCrypt + Snapper timers (if installed)
+systemctl enable dnscrypt-proxy 2>/dev/null || true
+systemctl enable snapper-timeline.timer snapper-cleanup.timer 2>/dev/null || true
+
+# Snapper setup
+umount /.snapshots 2>/dev/null || true
+rm -rf /.snapshots
+snapper --no-dbus -c root create-config / 2>/dev/null || true
+btrfs subvol delete /.snapshots 2>/dev/null || true
+mkdir /.snapshots
+mount -a
+
+# Override snapper configs with BalOS versions if shipped
+[[ -f /etc/snapper/configs/root-balos ]] && cp /etc/snapper/configs/root-balos /etc/snapper/configs/root
+CHROOT
+chmod +x /mnt/root/chroot-setup.sh
+arch-chroot /mnt /root/chroot-setup.sh 2>&1 | tee -a "$LOG"
+rm /mnt/root/chroot-setup.sh
+
+# ─── 7. Finish ──────────────────────────────────────────────────
+sync
+log "${G}${B}✓ Installation complete${N}"
+
+DIALOG --title " Done " --yesno \
+"\n\Z2\ZbBalOS installed successfully.\Zn\n\nReboot now?" 10 50 && {
+    umount -R /mnt || true
+    [[ $USE_LUKS -eq 1 ]] && cryptsetup close balos_root || true
+    systemctl reboot
+}
+
+clear

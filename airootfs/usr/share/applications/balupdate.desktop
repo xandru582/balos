@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=BalOS · Update
+Comment=Safe snapshot-backed system update
+Exec=kitty -T balupdate -e bash -c 'sudo balupdate now; echo; read -p "Press enter to close..."'
+Icon=system-software-update
+Terminal=false
+Categories=System;Settings;
+Keywords=balos;update;upgrade;pacman;

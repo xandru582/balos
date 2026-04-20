@@ -1,0 +1,15 @@
+[Unit]
+Description=BalOS first-boot tuning
+DefaultDependencies=no
+After=sysinit.target local-fs.target
+Before=basic.target
+ConditionPathExists=!/var/lib/balos/firstboot-done
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/balsaver --balanced
+ExecStartPost=/bin/sh -c 'mkdir -p /var/lib/balos && touch /var/lib/balos/firstboot-done'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

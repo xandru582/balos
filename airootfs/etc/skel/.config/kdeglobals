@@ -1,0 +1,23 @@
+[General]
+ColorScheme=BalosMatrix
+Name=Balos Matrix
+shadeSortColumn=true
+TerminalApplication=kitty
+TerminalService=kitty.desktop
+
+[Icons]
+Theme=Papirus-Dark
+
+[KDE]
+LookAndFeelPackage=org.kde.breezedark.desktop
+SingleClick=false
+contrast=4
+widgetStyle=Breeze
+
+[WM]
+activeBackground=0a1810
+activeBlend=00ff88
+activeForeground=b8ffce
+inactiveBackground=020604
+inactiveBlend=3a7040
+inactiveForeground=55ffaa

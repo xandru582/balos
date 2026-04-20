@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=BalOS · Panic
+Comment=Emergency sanitization (hard tier)
+Exec=pkexec balpanic hard
+Icon=security-high
+Terminal=true
+Categories=System;Security;
+Keywords=balos;panic;emergency;wipe;security;

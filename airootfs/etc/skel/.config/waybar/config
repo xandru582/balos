@@ -1,0 +1,138 @@
+{
+    "layer": "top",
+    "position": "top",
+    "height": 28,
+    "spacing": 4,
+
+    "modules-left": ["custom/balos", "hyprland/workspaces", "tray"],
+    "modules-center": ["clock"],
+    "modules-right": [
+        "custom/mode",
+        "custom/vpn",
+        "custom/firewall",
+        "network",
+        "pulseaudio",
+        "cpu",
+        "memory",
+        "temperature",
+        "backlight",
+        "battery",
+        "custom/power"
+    ],
+
+    "custom/balos": {
+        "format": "❯ BalOS",
+        "tooltip": false,
+        "on-click": "fuzzel"
+    },
+
+    "custom/mode": {
+        "exec": "cat /run/balos-mode 2>/dev/null || cat /tmp/balos-mode 2>/dev/null || echo default",
+        "interval": 5,
+        "format": " {}",
+        "on-click": "kitty -e balmonitor",
+        "tooltip-format": "BalOS profile (click: monitor)"
+    },
+
+    "custom/vpn": {
+        "exec": "ip link show wg0 &>/dev/null && echo '󰖂 VPN' || echo ''",
+        "interval": 5,
+        "on-click": "pkexec wg-quick up wg0 2>/dev/null || pkexec wg-quick down wg0",
+        "tooltip-format": "Click to toggle WireGuard"
+    },
+
+    "custom/firewall": {
+        "exec": "nft list tables 2>/dev/null | head -1 | awk '{print \"󰒃 \"$NF}' | sed 's/NF/off/'",
+        "interval": 10,
+        "on-click": "pkexec balshield armor",
+        "tooltip": "Click: armor mode"
+    },
+
+    "hyprland/workspaces": {
+        "format": "{icon}",
+        "format-icons": {
+            "1": "",
+            "2": "",
+            "3": "",
+            "4": "",
+            "5": "",
+            "urgent": "",
+            "focused": "",
+            "default": ""
+        }
+    },
+
+    "tray": {
+        "spacing": 8
+    },
+
+    "clock": {
+        "format": "{:%H:%M · %a %d}",
+        "tooltip-format": "<big>{:%Y %B}</big>\n<tt><small>{calendar}</small></tt>"
+    },
+
+    "cpu": {
+        "format": " {usage}%",
+        "interval": 2,
+        "on-click": "kitty -e btop"
+    },
+
+    "memory": {
+        "format": " {percentage}%",
+        "interval": 5
+    },
+
+    "temperature": {
+        "critical-threshold": 85,
+        "format": " {temperatureC}°C",
+        "format-critical": " {temperatureC}°C"
+    },
+
+    "backlight": {
+        "format": " {percent}%",
+        "on-scroll-up": "brightnessctl set +5%",
+        "on-scroll-down": "brightnessctl set 5%-"
+    },
+
+    "battery": {
+        "states": {
+            "warning": 30,
+            "critical": 15
+        },
+        "format": "{icon} {capacity}%",
+        "format-charging": " {capacity}%",
+        "format-plugged": " {capacity}%",
+        "format-icons": ["", "", "", "", ""],
+        "on-click": "pkexec balsaver"
+    },
+
+    "network": {
+        "format-wifi": " {signalStrength}%",
+        "format-ethernet": " {ifname}",
+        "format-disconnected": "⚠ off",
+        "tooltip-format": "{ifname}: {ipaddr}/{cidr}\n{essid} ({signalStrength}%)\n↓ {bandwidthDownBits} / ↑ {bandwidthUpBits}",
+        "on-click": "kitty -e nmtui"
+    },
+
+    "pulseaudio": {
+        "format": "{icon} {volume}%",
+        "format-muted": " muted",
+        "format-icons": {
+            "headphone": "",
+            "hands-free": "",
+            "headset": "",
+            "phone": "",
+            "portable": "",
+            "car": "",
+            "default": ["", "", ""]
+        },
+        "on-click": "pavucontrol"
+    },
+
+    "custom/power": {
+        "format": " ",
+        "tooltip": false,
+        "on-click": "loginctl poweroff",
+        "on-click-right": "loginctl reboot"
+    }
+}

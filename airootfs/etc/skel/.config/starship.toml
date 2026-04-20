@@ -1,0 +1,68 @@
+# BalOS · Starship prompt — hacker-clean
+
+format = """
+[╭─](bold green)$os$username$hostname$directory$git_branch$git_status$nodejs$python$rust$golang$docker_context$cmd_duration
+[╰─](bold green)$character"""
+
+add_newline = true
+
+[character]
+success_symbol = "[▶](bold green)"
+error_symbol = "[✗](bold red)"
+vimcmd_symbol = "[◀](bold cyan)"
+
+[username]
+style_user = "bold magenta"
+style_root = "bold red"
+format = "[$user]($style)"
+show_always = true
+
+[hostname]
+ssh_only = false
+style = "bold cyan"
+format = "[@$hostname]($style) "
+
+[directory]
+style = "bold yellow"
+format = "[$path]($style)[$read_only]($read_only_style) "
+truncation_length = 3
+truncate_to_repo = true
+read_only = " 🔒"
+
+[git_branch]
+symbol = " "
+style = "bold purple"
+format = "on [$symbol$branch]($style) "
+
+[git_status]
+style = "bold red"
+format = '([\[$all_status$ahead_behind\]]($style) )'
+
+[cmd_duration]
+min_time = 2_000
+style = "bold yellow"
+format = "took [$duration]($style) "
+
+[os]
+disabled = false
+format = "[$symbol]($style) "
+style = "bold green"
+
+[os.symbols]
+Arch = ""
+
+[python]
+symbol = " "
+style = "bold green"
+[nodejs]
+symbol = " "
+style = "bold green"
+[rust]
+symbol = " "
+style = "bold red"
+[golang]
+symbol = " "
+style = "bold cyan"
+[docker_context]
+symbol = " "
+style = "bold blue"

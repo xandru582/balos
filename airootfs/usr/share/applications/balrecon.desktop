@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=BalOS · Recon
+Comment=Automated target enumeration
+Exec=kitty -T balrecon -e bash -c 'read -p "target: " t; balrecon "$t"; read -p "Press enter to close..."'
+Icon=utilities-terminal
+Terminal=false
+Categories=Network;Security;
+Keywords=balos;recon;nmap;scan;pentest;

@@ -1,0 +1,55 @@
+#compdef bal
+# BalOS zsh completion
+
+_bal() {
+    local -a commands
+    commands=(
+        'boost:Gaming performance mode'
+        'saver:Extreme battery mode'
+        'balance:Balanced default profile'
+        'status:System + profile status'
+        'monitor:Live TUI dashboard'
+        'shield:Firewall level switcher'
+        'stealth:Anonymize (Tor+DoH+MAC)'
+        'vault:Encrypted secrets manager'
+        'sandbox:Run app in firejail'
+        'clip:Encrypted clipboard history'
+        'panic:Emergency sanitize'
+        'rescue:Anti-forensics + RAM wipe'
+        'vpn:WireGuard VPN toggle'
+        'net:Network utilities'
+        'geo:SSID-based auto-shield'
+        'hack:Launch pentest workspace'
+        'recon:Automated target enum'
+        'pwn:Reverse shell toolkit'
+        'watch:Anomaly detector'
+        'update:Snapshot-backed update'
+        'init:First-boot wizard'
+        'kernel:Build BalKernel'
+        'help:Show usage'
+        'version:Show version'
+    )
+
+    if (( CURRENT == 2 )); then
+        _describe 'command' commands
+        return
+    fi
+
+    case "$words[2]" in
+        shield)  _values 'level' off normal armor fortress status ;;
+        stealth) _values 'action' on off status mac test leaks ;;
+        hack)    _values 'mode' recon web wifi reverse forensics crack osint menu ;;
+        panic)   _values 'tier' soft hard nuclear status ;;
+        vault)   _values 'cmd' init add get list rm edit sync lock unlock gen ;;
+        pwn)     _values 'cmd' listen gen encode stage ;;
+        geo)     _values 'cmd' auto-on auto-off add list status ;;
+        clip)    _values 'cmd' add list get rm purge ;;
+        vpn)     _values 'cmd' up down status ;;
+        net)     _values 'cmd' ip iface speed ports conns dns scan connect monitor managed mac flush proxy vpn nmap ;;
+        update)  _values 'cmd' now rollback list-snapshots clean ;;
+        watch)   _values 'cmd' start stop status log ;;
+        kernel)  _values 'cmd' build install status ;;
+    esac
+}
+
+_bal "$@"

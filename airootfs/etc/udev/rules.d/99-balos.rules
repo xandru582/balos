@@ -1,0 +1,52 @@
+# ═══════════════════════════════════════════════════════════════
+# BalOS udev rules — auto power profiles + peripheral whitelist
+# ═══════════════════════════════════════════════════════════════
+
+# ── Auto switch power profile on AC/BAT ──────────────────────────
+SUBSYSTEM=="power_supply", ATTR{online}=="1", RUN+="/usr/bin/balsaver --balanced"
+SUBSYSTEM=="power_supply", ATTR{online}=="0", RUN+="/usr/bin/balsaver"
+
+# ── Gaming peripherals: keep USB active ──────────────────────────
+SUBSYSTEM=="usb", ATTRS{idVendor}=="046d", ATTR{power/control}="on"   # Logitech
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1532", ATTR{power/control}="on"   # Razer
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1038", ATTR{power/control}="on"   # SteelSeries
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1b1c", ATTR{power/control}="on"   # Corsair
+SUBSYSTEM=="usb", ATTRS{idVendor}=="045e", ATTR{power/control}="on"   # Xbox
+SUBSYSTEM=="usb", ATTRS{idVendor}=="054c", ATTR{power/control}="on"   # Sony (DualShock/DualSense)
+SUBSYSTEM=="usb", ATTRS{idVendor}=="2dc8", ATTR{power/control}="on"   # 8BitDo
+
+# ── Pentesting WiFi dongles: always active ───────────────────────
+# Alfa AWUS036ACH / AC1200 / NHA / H — Realtek
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTR{power/control}="on"
+# Ralink / MediaTek
+SUBSYSTEM=="usb", ATTRS{idVendor}=="148f", ATTR{power/control}="on"
+# Atheros
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0cf3", ATTR{power/control}="on"
+
+# ── NVMe: active PM when on AC, auto on battery (TLP handles) ────
+ACTION=="add", SUBSYSTEM=="block", KERNEL=="nvme*", ATTR{power/control}="on"
+
+# ── I/O schedulers: optimal per device type ──────────────────────
+ACTION=="add|change", KERNEL=="sd[a-z]*", ATTR{queue/rotational}=="1", ATTR{queue/scheduler}="bfq"
+ACTION=="add|change", KERNEL=="sd[a-z]*", ATTR{queue/rotational}=="0", ATTR{queue/scheduler}="mq-deadline"
+ACTION=="add|change", KERNEL=="nvme*",                                  ATTR{queue/scheduler}="none"
+
+# NVMe tuning: higher queue depth for gaming workloads
+ACTION=="add|change", KERNEL=="nvme*", ATTR{queue/nr_requests}="2048"
+
+# ── AMD GPU auto power ───────────────────────────────────────────
+KERNEL=="card[0-9]", SUBSYSTEM=="drm", DRIVERS=="amdgpu", ATTR{device/power_dpm_force_performance_level}="auto"
+
+# ── Controllers: grant user access (gamepads, HID) ───────────────
+SUBSYSTEM=="input", ATTRS{name}=="*Xbox*", TAG+="uaccess"
+SUBSYSTEM=="input", ATTRS{name}=="*DualSense*", TAG+="uaccess"
+SUBSYSTEM=="input", ATTRS{name}=="*DualShock*", TAG+="uaccess"
+SUBSYSTEM=="input", ATTRS{name}=="*Switch*", TAG+="uaccess"
+KERNEL=="uinput", TAG+="uaccess", MODE="0660", GROUP="input"
+
+# ── Capture cards (streaming) ────────────────────────────────────
+SUBSYSTEM=="video4linux", TAG+="uaccess"
+
+# ── USB Rubber Ducky / OMG cable detection (alert) ───────────────
+# When a HID keyboard is plugged in fast, log it (paranoid users)
+# ACTION=="add", SUBSYSTEM=="usb", ENV{ID_USB_INTERFACES}=="*:030101:*", RUN+="/usr/bin/logger -t BalOS 'New HID keyboard attached: $attr{idVendor}:$attr{idProduct}'"

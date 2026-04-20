@@ -1,0 +1,28 @@
+#!/usr/bin/nft -f
+# BalOS FORTRESS — VPN kill-switch
+# Blocks ALL traffic except through wg0 (WireGuard VPN)
+flush ruleset
+
+table inet fortress {
+    chain input {
+        type filter hook input priority -10; policy drop;
+        iif lo accept
+        iif wg0 accept
+        ct state { established, related } accept
+    }
+    chain forward { type filter hook forward priority -10; policy drop; }
+    chain output {
+        type filter hook output priority -10; policy drop;
+        oif lo accept
+        oif wg0 accept
+        # Allow WireGuard handshake (otherwise VPN can't start)
+        udp dport 51820 accept
+        # Allow local DNSCrypt
+        ip daddr 127.0.0.1 udp dport 53 accept
+        ip daddr 127.0.0.1 tcp dport 53 accept
+        # NTP for clock sync (required for VPN handshake)
+        udp dport 123 accept
+        # DHCP
+        udp dport 67 accept
+    }
+}

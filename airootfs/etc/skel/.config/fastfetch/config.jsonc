@@ -1,0 +1,39 @@
+{
+  "$schema": "https://github.com/fastfetch-cli/fastfetch/raw/dev/doc/json_schema.json",
+  "logo": {
+    "source": "/usr/share/balos/ascii-logo.txt",
+    "type": "file",
+    "padding": { "left": 2, "right": 3 },
+    "color": { "1": "green", "2": "magenta" }
+  },
+  "display": {
+    "separator": " ▸ ",
+    "color": { "keys": "bright_green", "output": "bright_white" }
+  },
+  "modules": [
+    { "type": "title", "color": { "user": "bright_green", "at": "bright_white", "host": "bright_magenta" } },
+    "separator",
+    { "type": "os",      "key": "  OS" },
+    { "type": "kernel",  "key": "  Kernel" },
+    { "type": "uptime",  "key": "  Uptime" },
+    { "type": "packages","key": "  Packages" },
+    { "type": "shell",   "key": "  Shell" },
+    "break",
+    { "type": "wm",          "key": "  WM" },
+    { "type": "terminal",    "key": "  Term" },
+    { "type": "terminalfont","key": "  Font" },
+    { "type": "cursor",      "key": "  Cursor" },
+    "break",
+    { "type": "cpu",    "key": "  CPU" },
+    { "type": "gpu",    "key": "  GPU" },
+    { "type": "memory", "key": "  RAM" },
+    { "type": "disk",   "key": "  Disk" },
+    { "type": "battery","key": "  Battery" },
+    "break",
+    { "type": "locale","key": "  Locale" },
+    { "type": "localip","key": "  IP (local)" },
+    { "type": "publicip","key": "  IP (public)", "timeout": 1000 },
+    "break",
+    { "type": "colors", "paddingLeft": 2, "symbol": "circle" }
+  ]
+}

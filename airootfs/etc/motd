@@ -1,0 +1,22 @@
+
+[0;32m  ┌──────────────────────────────────────────────────────────────┐
+  │[0m    ██████╗  █████╗ ██╗      ██████╗ ███████╗              [0;32m│
+  │[0m    ██╔══██╗██╔══██╗██║     ██╔═══██╗██╔════╝              [0;32m│
+  │[0m    ██████╔╝███████║██║     ██║   ██║███████╗              [0;32m│
+  │[0m    ██╔══██╗██╔══██║██║     ██║   ██║╚════██║              [0;32m│
+  │[0m    ██████╔╝██║  ██║███████╗╚██████╔╝███████║              [0;32m│
+  │[0m    ╚═════╝ ╚═╝  ╚═╝╚══════╝ ╚═════╝ ╚══════╝              [0;32m│
+  │                                                              │
+  │[0m    [0;35m[ hack · play · evade · endure ][0m                         [0;32m│
+  │                                                              │
+  │[0m    Quick reference:                                          [0;32m│
+  │[0m      [0;36mbal status[0m          current profile & network           [0;32m│
+  │[0m      [0;36mbal boost[0m           gaming performance mode             [0;32m│
+  │[0m      [0;36mbal saver[0m           extreme battery mode                 [0;32m│
+  │[0m      [0;36mbal hack <mode>[0m     launch pentest workspace             [0;32m│
+  │[0m      [0;36mbal shield fortress[0m VPN kill-switch firewall              [0;32m│
+  │[0m      [0;36mbal stealth on[0m      Tor + MAC randomize + DoH             [0;32m│
+  │[0m      [0;36mbal panic[0m           emergency sanitize system             [0;32m│
+  │                                                              │
+  │[0m    Type [0;36mbal[0m for full command list.                            [0;32m│
+  └──────────────────────────────────────────────────────────────┘[0m

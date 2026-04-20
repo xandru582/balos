@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+# balrecon — automated multi-stage target enumeration
+# Runs: ping → nmap quick → nmap deep → service probes → web probes → report
+set -euo pipefail
+
+G='\033[0;32m'; C='\033[0;36m'; Y='\033[1;33m'; M='\033[0;35m'; R='\033[0;31m'
+B='\033[1m'; D='\033[2m'; N='\033[0m'
+
+usage() {
+cat << EOF
+${M}${B}balrecon${N} — automated enumeration
+
+  balrecon ${C}<target>${N} [options]
+
+${B}OPTIONS${N}
+  ${C}--quick${N}       Fast scan only (top 1000 ports)
+  ${C}--deep${N}        Full 65535 ports + scripts
+  ${C}--web${N}         Add web discovery (gobuster, ffuf, whatweb)
+  ${C}--passive${N}     No active scanning (OSINT only)
+  ${C}--out DIR${N}     Output directory (default: ./recon-<target>-<date>)
+
+${B}EXAMPLES${N}
+  balrecon 10.10.10.1
+  balrecon scanme.nmap.org --web
+  balrecon target.com --deep --web --out /tmp/t1
+EOF
+}
+
+TARGET="${1:-}"
+[[ -z "$TARGET" || "$TARGET" =~ ^- ]] && { usage; exit 0; }
+shift
+
+DEEP=false; WEB=false; PASSIVE=false; QUICK=false
+OUT=""
+while (($#)); do
+    case "$1" in
+        --quick) QUICK=true; shift ;;
+        --deep)  DEEP=true; shift ;;
+        --web)   WEB=true; shift ;;
+        --passive) PASSIVE=true; shift ;;
+        --out)   OUT="$2"; shift 2 ;;
+        *)       echo "unknown: $1"; exit 1 ;;
+    esac
+done
+
+[[ -z "$OUT" ]] && OUT="./recon-${TARGET//\//_}-$(date +%Y%m%d-%H%M)"
+mkdir -p "$OUT"
+
+log() { echo -e "${C}[$(date +%H:%M:%S)]${N} $*" | tee -a "$OUT/recon.log"; }
+step(){ echo -e "\n${M}${B}── $* ──${N}\n" | tee -a "$OUT/recon.log"; }
+
+echo -e "${M}${B}"
+cat << 'BANNER'
+   ┌─┐┌─┐┬  ┬─┐┌─┐┌─┐┌─┐┌┐┌
+   ├┴┐├─┤│  ├┬┘├┤ │  │ ││││
+   └─┘┴ ┴┴─┘┴└─└─┘└─┘└─┘┘└┘
+BANNER
+echo -e "${N}${C}  target: ${B}${TARGET}${N}"
+echo -e "${C}  output: ${B}${OUT}${N}\n"
+
+# ═══ PASSIVE (OSINT) ══════════════════════════════════════════
+if $PASSIVE || ! $QUICK; then
+    step "passive · whois + dns"
+    whois "$TARGET" > "$OUT/whois.txt" 2>&1 || true
+    dig +noall +answer "$TARGET" ANY > "$OUT/dig.txt" 2>&1 || true
+    dig +noall +answer "$TARGET" MX  >> "$OUT/dig.txt" 2>&1 || true
+    dig +noall +answer "$TARGET" TXT >> "$OUT/dig.txt" 2>&1 || true
+    log "whois + dig saved"
+
+    if command -v theHarvester &>/dev/null; then
+        step "passive · theHarvester"
+        theHarvester -d "$TARGET" -b all -f "$OUT/harvester" 2>/dev/null | tee "$OUT/harvester.txt" || true
+    fi
+
+    if command -v sublist3r &>/dev/null; then
+        step "passive · subdomains"
+        sublist3r -d "$TARGET" -o "$OUT/subdomains.txt" 2>&1 | tail -5 || true
+    fi
+fi
+$PASSIVE && { log "passive-only finished"; echo -e "\n${G}✓ see ${OUT}/${N}"; exit 0; }
+
+# ═══ LIVENESS ═════════════════════════════════════════════════
+step "liveness · ping + arp"
+ping -c 2 -W 2 "$TARGET" > "$OUT/ping.txt" 2>&1 || log "  (target may filter icmp)"
+
+# ═══ QUICK NMAP ════════════════════════════════════════════════
+step "nmap · top-1000 quick scan"
+sudo nmap -sV --top-ports 1000 --open -T4 -oA "$OUT/nmap-quick" "$TARGET" | tee -a "$OUT/recon.log"
+
+# ═══ DEEP NMAP ═════════════════════════════════════════════════
+if $DEEP; then
+    step "nmap · all-ports deep scan"
+    OPEN_PORTS=$(grep -oP '^\d+/tcp\s+open' "$OUT/nmap-quick.nmap" | cut -d'/' -f1 | paste -sd,)
+    if [[ -n "$OPEN_PORTS" ]]; then
+        sudo nmap -sV -sC -A -p- --min-rate=5000 -T4 -oA "$OUT/nmap-deep" "$TARGET" | tee -a "$OUT/recon.log"
+        sudo nmap --script vuln -p "$OPEN_PORTS" -oA "$OUT/nmap-vuln" "$TARGET" | tee -a "$OUT/recon.log"
+    fi
+fi
+
+# ═══ SERVICE ENUMERATION ═══════════════════════════════════════
+OPEN_PORTS=$(grep -oP '^\d+/tcp\s+open' "$OUT/nmap-quick.nmap" 2>/dev/null | cut -d'/' -f1)
+
+# SMB
+if echo "$OPEN_PORTS" | grep -qE '^(139|445)$'; then
+    step "smb · enum4linux"
+    command -v enum4linux &>/dev/null && enum4linux -a "$TARGET" > "$OUT/smb.txt" 2>&1
+    command -v smbclient &>/dev/null && smbclient -L "//$TARGET/" -N > "$OUT/smb-shares.txt" 2>&1 || true
+fi
+
+# FTP
+if echo "$OPEN_PORTS" | grep -q '^21$'; then
+    step "ftp · anon check"
+    echo -e "user anonymous\npass anonymous@test.com\nls\nquit" | ftp -n "$TARGET" > "$OUT/ftp-anon.txt" 2>&1 || true
+fi
+
+# SSH
+if echo "$OPEN_PORTS" | grep -q '^22$'; then
+    step "ssh · banner"
+    timeout 5 nc -nv "$TARGET" 22 > "$OUT/ssh-banner.txt" 2>&1 || true
+fi
+
+# ═══ WEB ═══════════════════════════════════════════════════════
+if $WEB && echo "$OPEN_PORTS" | grep -qE '^(80|443|8080|8443)$'; then
+    step "web · whatweb"
+    command -v whatweb &>/dev/null && whatweb -a 3 "http://$TARGET" > "$OUT/whatweb.txt" 2>&1
+
+    step "web · directory brute"
+    WORDLIST="/usr/share/seclists/Discovery/Web-Content/common.txt"
+    [[ ! -f "$WORDLIST" ]] && WORDLIST="/usr/share/dirb/wordlists/common.txt"
+
+    if command -v ffuf &>/dev/null && [[ -f "$WORDLIST" ]]; then
+        ffuf -w "$WORDLIST" -u "http://$TARGET/FUZZ" -o "$OUT/ffuf.json" -of json 2>&1 | tail -30 | tee "$OUT/ffuf.txt"
+    fi
+
+    step "web · nuclei (critical/high)"
+    if command -v nuclei &>/dev/null; then
+        nuclei -u "http://$TARGET" -severity critical,high -o "$OUT/nuclei.txt" 2>/dev/null || true
+    fi
+fi
+
+# ═══ REPORT ════════════════════════════════════════════════════
+step "generating report"
+cat > "$OUT/REPORT.md" << EOF
+# Recon Report — ${TARGET}
+
+**Started:** $(head -1 "$OUT/recon.log" | awk '{print $1}')
+**Completed:** $(date +%H:%M:%S)
+**Output:** \`${OUT}/\`
+
+## Open Ports
+\`\`\`
+$(grep -E '^\d+/tcp' "$OUT/nmap-quick.nmap" 2>/dev/null || echo 'none')
+\`\`\`
+
+## Services
+\`\`\`
+$(grep 'open ' "$OUT/nmap-quick.nmap" 2>/dev/null | head -20)
+\`\`\`
+
+## Artifacts
+$(ls -1 "$OUT/" | grep -v REPORT | sed 's/^/- /')
+
+## Next Steps
+EOF
+
+# Suggest next steps based on discoveries
+{
+    grep -q 'ftp' "$OUT/nmap-quick.nmap" 2>/dev/null && echo "- [ ] FTP anonymous login (see ftp-anon.txt)"
+    grep -q 'ssh' "$OUT/nmap-quick.nmap" 2>/dev/null && echo "- [ ] SSH: try hydra / ssh-audit"
+    grep -q 'http' "$OUT/nmap-quick.nmap" 2>/dev/null && echo "- [ ] HTTP: burpsuite, check SQL/XSS injection points"
+    grep -q 'smb\|microsoft-ds' "$OUT/nmap-quick.nmap" 2>/dev/null && echo "- [ ] SMB: impacket suite, null sessions"
+    grep -q 'mysql\|postgres' "$OUT/nmap-quick.nmap" 2>/dev/null && echo "- [ ] DB: test default creds (root:root, postgres:postgres)"
+    grep -q 'VNC\|RDP' "$OUT/nmap-quick.nmap" 2>/dev/null && echo "- [ ] Remote access: hydra / crowbar"
+} >> "$OUT/REPORT.md"
+
+echo -e "\n${G}${B}✓ Recon complete${N}"
+echo -e "  Report:  ${C}${OUT}/REPORT.md${N}"
+echo -e "  View:    ${C}bat ${OUT}/REPORT.md${N}"

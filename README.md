@@ -1,0 +1,352 @@
+# BalOS
+
+> **hack · play · evade · endure**
+> A from-scratch Linux distribution for laptops that refuses to compromise.
+
+<p align="center">
+  <img src="https://img.shields.io/badge/base-Arch%20Linux-1793d1?logo=archlinux&logoColor=white" />
+  <img src="https://img.shields.io/badge/kernel-linux--zen%20%2B%20BalKernel-00ff88" />
+  <img src="https://img.shields.io/badge/DE-KDE%20Plasma%206-1d99f3?logo=kde&logoColor=white" />
+  <img src="https://img.shields.io/badge/license-MIT-00ff88" />
+  <img src="https://img.shields.io/badge/status-alpha-ff8800" />
+</p>
+
+```
+  ┌─┐┌─┐┬  ┌─┐┌─┐
+  ├┴┐├─┤│  │ │└─┐
+  └─┘┴ ┴┴─┘└─┘└─┘
+```
+
+BalOS is an opinionated Arch-based distribution built around four promises that
+most distros force you to trade against each other:
+
+| Pillar     | What it means in BalOS                                                               |
+|------------|---------------------------------------------------------------------------------------|
+| **hack**   | BlackArch's 2800+ pentest tools, tmux-based workspaces, reverse-shell toolkit, IDS    |
+| **play**   | Steam + Proton + Wine-Staging, 6 per-game performance profiles, 256µs PipeWire audio  |
+| **evade**  | 4-tier nftables firewall, Tor transparent proxy, MAC rotation, anti-forensics layer   |
+| **endure** | TLP + auto-cpufreq + powertop, target: **2× battery life vs. stock Arch**             |
+
+Everything is glued together by a single CLI — `bal` — plus a dashboard
+(`balmonitor`), a dialog-based installer, and a KDE Plasma + Matrix-themed
+desktop.
+
+---
+
+## Table of contents
+
+- [Why BalOS?](#why-balos)
+- [Screenshots / demo](#screenshots--demo)
+- [Feature matrix](#feature-matrix)
+- [The `bal` family of tools](#the-bal-family-of-tools)
+- [Build the ISO](#build-the-iso)
+- [Install to disk](#install-to-disk)
+- [Architecture](#architecture)
+- [Contributing](#contributing)
+- [Roadmap](#roadmap)
+- [License](#license)
+
+---
+
+## Why BalOS?
+
+If you've ever tried to daily-drive Kali on a laptop you know the pain: great
+tools, terrible battery. Try Pop!\_OS and you get the opposite. SteamOS is
+polished but the sandbox is tight. Arch gives you everything but asks you to
+spend a weekend configuring it.
+
+BalOS tries to be all four at once, tuned out of the box:
+
+- **Battery:** `linux-zen` + BORE scheduler + TLP + auto-cpufreq + powertop +
+  PCIe ASPM + ZRAM zstd swap + aggressive USB autosuspend. Target laptop
+  runtime is roughly double stock Arch for identical hardware/workload.
+- **Gaming:** `gamemoderun` wires into GameMode, which calls `balboost` with a
+  profile that fits the game; PipeWire is pre-configured to 256-sample quantum
+  for sub-6ms audio latency; Wine/DXVK/VKD3D are pre-cached.
+- **Security:** Default-deny firewall, DNSCrypt-proxy over DoH, optional Tor
+  transparent proxy, LUKS2 (argon2id), btrfs subvolumes with snapper, USBGuard
+  with a Rubber-Ducky heuristic, Suricata host IDS, firejail sandbox profiles.
+- **Pentesting:** BlackArch repo enabled, `balhack` drops you into a 7-pane
+  tmux workspace (recon / web / wifi / reverse / forensics / crack / osint),
+  `balrecon` runs the full nmap → service → web → report pipeline.
+
+No single piece is unique — the integration is.
+
+---
+
+## Screenshots / demo
+
+> The first ISO builds are coming; PRs with screenshots welcome.
+
+```
+$ balmonitor
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃  BalOS · monitor    profile: boost:competitive   uptime: 2 hours      ┃
+┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫
+┃  CPU  gov=performance  boost=1  avg=42%  freq=4.31 GHz  temp= 68°C
+┃  c0  ████████░░░░░░░░░░░░░░░░  33%    c4  ██████████░░░░░░░░░░░░  41%
+┃  c1  ██████████████░░░░░░░░░░  58%    c5  ████████░░░░░░░░░░░░░░  33%
+┃  c2  ██████░░░░░░░░░░░░░░░░░░  25%    c6  █████████████░░░░░░░░░  54%
+┃  c3  ███████████████████░░░░░  79%    c7  █████████░░░░░░░░░░░░░  37%
+┃  CPU hist  ▂▃▅▆▇▇▆▅▄▃▄▅▆▇▇▆▅▄▃▄
+┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫
+┃  Battery ████████████████░░░░  80% ▼   draw=8.3 W   remain=3h 42m
+┃  GPU    ██████████░░░░░░░░░░  42%   name=amd  temp= 61°C
+┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫
+┃  NET    iface=wlan0   ip=10.0.0.42   fw=armor  vpn=up  tor=active
+┃  ▼ RX  ▂▃▅▆▇▇▆▅▄▃▄▅▆▇▇▆▅▄▃▄  1.2 MB/s
+┃  ▲ TX  ▁▂▂▃▄▅▄▃▂▂▁▁▂▃▄▅▄▃▂▁  420.3 KB/s
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+```
+
+---
+
+## Feature matrix
+
+### Kernel & power
+- `linux-zen` default; optional custom **BalKernel** (BORE scheduler, 1000 Hz,
+  PREEMPT, BBR, WiFi monitor mode patches for Atheros/Realtek/MT76)
+- TLP + auto-cpufreq + powertop auto-tune
+- PCIe ASPM powersupersave, SATA ALPM, USB autosuspend
+- ZRAM zstd swap in place of disk swap
+- Sleep state `s2idle` preferred; configurable to deep via kernel param
+
+### Desktop
+- KDE Plasma 6 on Wayland + SDDM
+- Matrix-rain SDDM theme (QML Canvas)
+- Kitty, Starship, Fastfetch, JetBrainsMono Nerd Font
+- Optional Waybar (Hyprland-ready config)
+- Kitty, tmux, neovim all themed `#00ff88` on `#020604`
+
+### Network / security
+- nftables default-deny, four tiers: `off | normal | armor | fortress`
+- Fortress = VPN kill-switch (drops everything except `wg0`)
+- DNSCrypt-proxy with DoH (Cloudflare, Quad9, NextDNS)
+- Tor client with transparent proxy mode
+- NetworkManager MAC randomization + per-SSID geofence (`balgeo`)
+- USBGuard with Rubber Ducky / OMG-cable heuristics
+- Suricata baseline IDS (`balids`)
+- Firejail sandbox profiles (`balsandbox`)
+- LUKS2 (argon2id, 4s iter-time) + btrfs subvols + snapper snapshots
+
+### Performance
+- GameMode integration (auto-boost on game launch)
+- PipeWire 256-sample quantum (low-latency audio)
+- Kernel scheduler: `SCHED_LATENCY_NS=3ms` (`SCHED_LATENCY_NS=2ms` in
+  competitive profile)
+- BBR congestion control, fq qdisc
+- AMD GPU `pp_power_profile_mode=5` (VR/Gaming) in cinematic profile
+- Transparent huge pages for emulation workloads
+
+### Pentesting
+- BlackArch repo pre-configured (2800+ packages)
+- `balhack` — tmux workspaces for recon / web / wifi / reverse / forensics /
+  crack / osint
+- `balrecon` — automated multi-stage enumeration → Markdown report
+- `balpwn` — reverse shell toolkit (14 payload languages, PTY upgrade
+  cheatsheet, HTTP stager)
+- `balids` — Suricata wrapper
+
+---
+
+## The `bal` family of tools
+
+All commands also dispatch through a single unified CLI: `bal <subcommand>`.
+
+| Command     | Purpose                                                                   |
+|-------------|---------------------------------------------------------------------------|
+| `bal`       | fzf interactive menu of all subcommands                                   |
+| `balboost`  | Gaming performance profiles (competitive / cinematic / esports / …)       |
+| `balsaver`  | Extreme battery saver (powersave, SMT off, half cores parked)             |
+| `balshield` | Firewall tiers (off / normal / armor / fortress)                          |
+| `balstealth`| Tor + DNSCrypt + MAC + camera kill + **leak tests**                       |
+| `balgeo`    | Per-SSID geofence — auto-apply profile on WiFi connect                    |
+| `balhack`   | Launch 7-pane tmux pentest workspace                                      |
+| `balrecon`  | Automated enum: whois → nmap → services → web → report                    |
+| `balpwn`    | Reverse shell listener + payload generator                                |
+| `balids`    | Suricata host IDS wrapper (on / alerts / watch / update)                  |
+| `balvault`  | `pass`(1) wrapper with fzf + QR + git sync                                |
+| `balsandbox`| Firejail wrapper with per-app profiles                                    |
+| `balclip`   | age-encrypted clipboard history                                           |
+| `balmonitor`| Real-time TUI dashboard (per-core bars, sparklines, drain rate)           |
+| `balpanic`  | Tiered emergency sanitize: `soft` / `hard` / `nuclear`                    |
+| `balrescue` | Anti-forensics: RAM wipe / swap shred / free-space zero / partition burn  |
+| `balwatch`  | Daemon: USB / port / SSH / deauth anomaly detection → notify-send         |
+| `balupdate` | Snapshot-backed pacman wrapper with auto-rollback                         |
+| `balnet`    | Network swiss-army (iface / speed / ports / conns / vpn up-down)          |
+| `balkernel-build` | Compile BalKernel from shipped PKGBUILD                             |
+| `balos-install`   | Dialog TUI installer (geo-TZ, GPU detect, LUKS2)                    |
+
+Run `bal help` or `<any-tool> --help` for details.
+
+---
+
+## Build the ISO
+
+BalOS is built with `mkarchiso` inside a privileged Docker container, so you
+can build on macOS, Linux, or Windows/WSL.
+
+### Requirements
+- Docker (or Podman) ~20.10+
+- ~25 GB free disk space
+- ~20 min on a fast connection (first build; subsequent builds use cached
+  pacman packages)
+
+### Quick build
+
+```bash
+git clone https://github.com/xandru582/balos.git
+cd balos
+./build.sh
+```
+
+Output: `output/balos-1.0.0-dark-x86_64.iso`
+
+### Build flags
+
+```
+./build.sh --clean        # wipe previous workdir
+./build.sh --no-cache     # ignore Docker layer cache (fresh)
+./build.sh --with-kernel  # also compile BalKernel (adds ~40 min)
+```
+
+### Write to USB
+
+```bash
+# Find your USB stick first
+lsblk
+# Write
+sudo dd if=output/balos-*.iso of=/dev/sdX bs=4M status=progress conv=fsync
+```
+
+Or use `balenaEtcher` / `Ventoy` / `Rufus`.
+
+---
+
+## Install to disk
+
+1. Boot the ISO. Log in as `root` (no password on Live).
+2. Connect to Wi-Fi: `nmtui`
+3. Run: `balos-install`
+4. Answer the prompts — disk, LUKS passphrase, hostname, user, timezone
+   (auto-detected from your IP), locale, GPU driver, feature profiles.
+5. Reboot.
+
+The installer:
+- Wipes the chosen disk, creates ESP + root partitions
+- Optionally sets up LUKS2 (argon2id, 4000ms iteration, 512-bit key)
+- Creates btrfs subvols `@`, `@home`, `@var`, `@log`, `@snapshots`, `@swap`
+- Installs base + GPU driver + selected feature bundles
+- Configures systemd-boot with zen kernel + fallback entry
+- Enables NetworkManager, SDDM, TLP, nftables, DNSCrypt, snapper timers
+
+First boot lands on SDDM with Matrix rain.
+
+---
+
+## Architecture
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│                        USER APPS                                    │
+│   Firefox · Steam · Wine · KDE · Kitty · LibreOffice · …            │
+├────────────────────────────────────────────────────────────────────┤
+│                     bal CLI LAYER                                   │
+│   balboost · balsaver · balshield · balstealth · balhack · …        │
+│   (thin bash scripts that orchestrate the system)                   │
+├────────────────────────────────────────────────────────────────────┤
+│       SERVICES LAYER                                                │
+│  TLP · GameMode · nftables · dnscrypt-proxy · Tor · Suricata ·      │
+│  USBGuard · snapper · balwatch · PipeWire                           │
+├────────────────────────────────────────────────────────────────────┤
+│       KERNEL                                                        │
+│  linux-zen (default) / BalKernel (BORE+1kHz+PREEMPT+BBR)            │
+│  mitigations=auto · zstd-compressed initramfs · ZRAM swap           │
+├────────────────────────────────────────────────────────────────────┤
+│       STORAGE                                                       │
+│  LUKS2 (argon2id) → btrfs (zstd:2, ssd, space_cache=v2, discard)   │
+│  subvols: @ @home @var @log @snapshots @swap                        │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+### Repository layout
+
+```
+.
+├── Dockerfile              # build container (archlinux:latest + mkarchiso)
+├── build.sh                # host-side build driver
+├── profiledef.sh           # archiso profile metadata
+├── packages.x86_64         # package manifest (~600 pkgs)
+├── pacman.conf             # repos (core, extra, multilib, chaotic-aur, blackarch, balos)
+│
+├── airootfs/               # everything that goes into the ISO's rootfs
+│   ├── etc/                # system configs (nftables, tlp, pipewire, snapper, …)
+│   ├── usr/
+│   │   ├── bin/            # the bal* CLI tools
+│   │   ├── share/          # SDDM themes, desktop entries, docs, skel
+│   │   └── lib/
+│   └── root/               # first-boot setup
+│
+├── kernel/                 # BalKernel PKGBUILD + config fragment
+├── grub/ efiboot/ syslinux/# bootloader assets for the Live ISO
+├── scripts/                # helper scripts (build hooks, etc.)
+└── output/                 # ISOs land here
+```
+
+---
+
+## Contributing
+
+BalOS is a personal project, but contributions are very welcome. Good places to
+start:
+
+- **New `bal*` tools** — pick a workflow you use daily and script it
+- **`.desktop` launchers** for existing tools
+- **Game profiles** (`/etc/balos/game-profiles/*.conf`)
+- **Geofence default rules** for public-WiFi SSIDs
+- **USBGuard default rules** for common devices
+- **Translations** of `bal` help strings
+
+Please read `CONTRIBUTING.md` before opening a PR.
+
+---
+
+## Roadmap
+
+- [x] Base ISO boots to KDE Plasma
+- [x] Full `bal` CLI suite
+- [x] Dialog installer
+- [x] Snapper + grub-btrfs integration
+- [x] Suricata IDS baseline
+- [ ] Public CI pipeline (GitHub Actions building nightly ISOs)
+- [ ] Official binary repo signed by project key
+- [ ] Secure Boot with custom MOK
+- [ ] Hyprland "blade" edition alongside Plasma
+- [ ] BalKernel pre-built binaries
+- [ ] Calamares installer alongside `dialog` one
+
+---
+
+## License
+
+MIT. See [LICENSE](LICENSE).
+
+BalOS includes and redistributes software under many other licenses (GPL,
+BSD, Apache-2, etc.). The configuration glue and `bal*` tools are MIT; the
+kernel is GPL-2; upstream packages retain their own licenses.
+
+---
+
+## Disclaimer
+
+BalOS ships with offensive security tooling (nmap, metasploit, hashcat,
+aircrack-ng, …). These are to be used **only on systems you own or have
+explicit written authorization to test**. The authors accept no liability for
+misuse. Anti-forensics features exist to protect privacy, not to enable
+criminal activity.
+
+Stay ethical. Hack what's yours.
+
+---
+
+<p align="center"><i>Built with ☕ and too little sleep.</i></p>

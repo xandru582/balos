@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# BalShield — multi-level firewall + VPN routing
+set -euo pipefail
+
+G='\033[0;32m'; R='\033[0;31m'; Y='\033[1;33m'; C='\033[0;36m'; M='\033[0;35m'
+B='\033[1m'; N='\033[0m'
+
+[[ $EUID -ne 0 ]] && exec sudo "$0" "$@"
+
+LEVEL="${1:-status}"
+
+flush() { nft flush ruleset; }
+
+apply_normal() {
+    flush
+    nft -f - << 'EOF'
+table inet filter {
+    chain input {
+        type filter hook input priority 0; policy drop;
+        iif lo accept
+        ct state { established, related } accept
+        ct state invalid drop
+        ip protocol icmp icmp type { echo-request, destination-unreachable, time-exceeded } accept
+        ip6 nexthdr icmpv6 icmpv6 type { echo-request, nd-neighbor-solicit, nd-neighbor-advert, nd-router-advert, destination-unreachable, packet-too-big, time-exceeded, parameter-problem } accept
+        # SSH on non-standard port 2222 (rate limited)
+        tcp dport 2222 ct state new limit rate 5/minute accept
+        # DHCPv6
+        udp dport 546 accept
+        # mDNS / local discovery
+        ip daddr 224.0.0.251 udp dport 5353 accept
+    }
+    chain forward { type filter hook forward priority 0; policy drop; }
+    chain output  { type filter hook output  priority 0; policy accept; }
+}
+EOF
+}
+
+apply_armor() {
+    # Normal + block all inbound, rate-limit outbound
+    apply_normal
+    nft add rule inet filter input ct state new counter drop
+    nft add rule inet filter output ct state new limit rate 200/second accept
+}
+
+apply_fortress() {
+    # Kill-switch: block ALL traffic except VPN + DNS to DNSCrypt
+    flush
+    nft -f - << 'EOF'
+table inet fortress {
+    chain input {
+        type filter hook input priority -10; policy drop;
+        iif lo accept
+        iif wg0 accept
+        ct state { established, related } accept
+    }
+    chain forward { type filter hook forward priority -10; policy drop; }
+    chain output {
+        type filter hook output priority -10; policy drop;
+        oif lo accept
+        oif wg0 accept
+        # VPN handshake ports (WireGuard)
+        udp dport 51820 accept
+        # DNSCrypt-Proxy on localhost
+        ip daddr 127.0.0.1 udp dport 53 accept
+        ip daddr 127.0.0.1 tcp dport 53 accept
+        # NTP (for clock sync)
+        udp dport 123 accept
+        # DHCP for local network
+        udp dport 67 accept
+    }
+}
+EOF
+    systemctl start wg-quick@wg0 2>/dev/null || echo -e "${Y}  ⚠ WireGuard config missing at /etc/wireguard/wg0.conf${N}"
+}
+
+show_status() {
+    echo -e "${C}${B}BalShield status${N}"
+    echo -e "${M}────────────────────────${N}"
+    if nft list tables 2>/dev/null | grep -q fortress; then
+        echo -e "  Mode:      ${R}FORTRESS${N} (kill-switch)"
+    elif nft list tables 2>/dev/null | grep -q filter; then
+        local rules
+        rules=$(nft list ruleset | wc -l)
+        echo -e "  Mode:      ${G}ACTIVE${N} (${rules} lines)"
+    else
+        echo -e "  Mode:      ${Y}DISABLED${N}"
+    fi
+    echo -e "  VPN (wg0): $(ip link show wg0 &>/dev/null && echo -e "${G}up${N}" || echo -e "${Y}down${N}")"
+    echo -e "  Tor:       $(systemctl is-active tor 2>/dev/null || echo inactive)"
+    echo -e "  DNSCrypt:  $(systemctl is-active dnscrypt-proxy 2>/dev/null || echo inactive)"
+    echo -e "  Public IP: ${C}$(curl -s --max-time 3 ifconfig.me 2>/dev/null || echo unknown)${N}"
+}
+
+case "$LEVEL" in
+    off|disable)
+        flush
+        echo -e "${Y}  ⚠ Firewall DISABLED${N}"
+        ;;
+    normal|default)
+        apply_normal
+        echo -e "${G}  ✓ Normal firewall active${N}"
+        ;;
+    armor|strict)
+        apply_armor
+        echo -e "${G}  ✓ ARMOR mode — blocking inbound, rate-limiting outbound${N}"
+        ;;
+    fortress|killswitch|paranoid)
+        apply_fortress
+        echo -e "${R}${B}  ⚠ FORTRESS MODE — all traffic must flow through VPN${N}"
+        ;;
+    status|show|*)
+        show_status
+        ;;
+esac

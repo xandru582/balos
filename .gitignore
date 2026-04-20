@@ -1,0 +1,61 @@
+# Build artifacts
+output/
+work/
+*.iso
+*.iso.sig
+*.iso.sha256
+*.iso.md5
+
+# Docker build cache
+.docker-cache/
+
+# Kernel compile
+kernel/src/
+kernel/pkg/
+kernel/*.pkg.tar.*
+kernel/*.log
+
+# Local repo (balos-repo)
+airootfs/var/cache/balos-repo/
+*.pkg.tar.zst
+*.pkg.tar.xz
+*.pkg.tar
+
+# Logs
+*.log
+
+# Editor cruft
+*.swp
+*.swo
+*~
+.DS_Store
+.vscode/
+.idea/
+*.iml
+Thumbs.db
+desktop.ini
+
+# Python (for any helper scripts)
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Node (for any helper scripts)
+node_modules/
+
+# Secrets / local env
+.env
+.env.local
+*.key
+*.pem
+*.crt
+!airootfs/etc/ssl/certs/*.pem
+secrets/
+
+# tmp
+tmp/
+*.tmp
+*.bak
+*.orig

@@ -1,0 +1,39 @@
+# BalOS Tor configuration
+
+User tor
+DataDirectory /var/lib/tor
+
+# SOCKS proxy (for proxychains, torsocks)
+SocksPort 127.0.0.1:9050 IsolateDestAddr IsolateDestPort
+
+# Control port (optional; Nyx status tool)
+ControlPort 127.0.0.1:9051
+CookieAuthentication 1
+
+# Exit policy: do not be an exit node (safer default)
+ExitRelay 0
+ExitPolicy reject *:*
+
+# Client-only (don't relay)
+ClientOnly 1
+
+# Don't keep logs by default
+Log notice file /var/log/tor/notices.log
+
+# Entry guards rotation
+NumEntryGuards 3
+GuardLifetime 30 days
+EnforceDistinctSubnets 1
+
+# Avoid exit nodes in 5-eyes countries (privacy lean)
+# ExcludeExitNodes {us}, {uk}, {ca}, {au}, {nz}
+# ExcludeNodes {ru}, {cn}, {ir}
+
+# Prevent DNS leaks
+DNSPort 127.0.0.1:9053
+AutomapHostsOnResolve 1
+AutomapHostsSuffixes .onion,.exit
+
+# Transparent proxy (advanced — enable with balstealth)
+# TransPort 127.0.0.1:9040
+# VirtualAddrNetworkIPv4 10.192.0.0/10

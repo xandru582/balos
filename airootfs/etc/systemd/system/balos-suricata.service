@@ -1,0 +1,25 @@
+[Unit]
+Description=BalOS Suricata IDS (host monitoring)
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/suricata/balos.yaml
+
+[Service]
+Type=simple
+ExecStartPre=/bin/sh -c 'test -d /var/lib/suricata/rules || (mkdir -p /var/lib/suricata/rules && suricata-update 2>/dev/null || true)'
+ExecStart=/usr/bin/suricata -c /etc/suricata/balos.yaml -i $$(ip -4 route show default | awk "{print \\$5; exit}")
+Restart=on-failure
+RestartSec=10
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+CPUSchedulingPolicy=batch
+
+# Sandbox
+ProtectSystem=strict
+ReadWritePaths=/var/log/suricata /var/run/suricata /var/lib/suricata
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

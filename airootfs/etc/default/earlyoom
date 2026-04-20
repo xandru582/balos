@@ -1,0 +1,1 @@
+EARLYOOM_ARGS="-r 60 -m 5,2 -s 10,5 --avoid '(^|/)(init|systemd|Xorg|Xwayland|kwin_wayland|plasmashell|pipewire|sshd)$' --prefer '(^|/)(firefox|chromium|steam|lutris|proton|wine|java)$'"

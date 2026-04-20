@@ -1,0 +1,98 @@
+.TH BAL 1 "2026" "BalOS 1.0" "BalOS Manual"
+.SH NAME
+bal \- BalOS unified command
+.SH SYNOPSIS
+.B bal
+[\fICOMMAND\fR] [\fIARGS\fR]
+.SH DESCRIPTION
+\fBbal\fR is the single entry point to every BalOS-specific facility:
+power profiles, security posture, network tooling, pentesting workspaces,
+and system maintenance.
+
+With no arguments it launches an interactive fzf menu.
+.SH COMMANDS
+.SS POWER
+.TP
+.B boost
+Gaming performance profile: performance governor, turbo enabled,
+PipeWire 256-sample quantum, GameMode, high-perf GPU.
+.TP
+.B saver
+Extreme battery profile: powersave governor, turbo disabled, SMT off,
+half cores parked, USB autosuspend, screen dim.
+Designed to roughly double battery life vs. a default Arch install.
+.TP
+.B monitor
+Live TUI dashboard with per-core CPU bars, network sparklines, and
+hotkey shortcuts (b/s/p/r/q).
+.SS SECURITY
+.TP
+.B shield \fILEVEL\fR
+Firewall: \fIoff\fR | \fInormal\fR | \fIarmor\fR (drop inbound, rate-limit
+outbound) | \fIfortress\fR (VPN kill-switch, deny everything except wg0).
+.TP
+.B stealth on|off|test|leaks
+Enable Tor + DNSCrypt + randomized MAC on all NICs. \fItest\fR runs
+IP/DNS/WebRTC leak checks.
+.TP
+.B vault \fISUBCMD\fR
+GPG-backed password & secrets store.
+.TP
+.B sandbox \fIAPP\fR
+Launch APP in a firejail sandbox with BalOS profiles.
+.TP
+.B panic \fITIER\fR
+Emergency sanitize: \fIsoft\fR (clear history/clipboard), \fIhard\fR (also
+kill browsers + randomize MAC + flush caches), \fInuclear\fR (also wipe
+encrypted swap, unmount sensitive dirs, lock all sessions).
+.TP
+.B rescue \fISUBCMD\fR
+Anti-forensics: wipe RAM, shred swap, zero free disk space.
+.SS NETWORK
+.TP
+.B vpn up|down|status
+WireGuard tunnel control (default interface: wg0).
+.TP
+.B geo \fISUBCMD\fR
+Per-SSID auto-profiles: define trusted networks, untrusted networks fall
+back to fortress + stealth automatically.
+.SS HACKING
+.TP
+.B hack \fIMODE\fR
+Spawn a tmux workspace pre-configured for: \fIrecon\fR, \fIweb\fR,
+\fIwifi\fR, \fIreverse\fR, \fIforensics\fR, \fIcrack\fR, or \fIosint\fR.
+.TP
+.B recon \fITARGET\fR
+Automated multi-stage enumeration (nmap → services → web probes →
+exploit suggestions).
+.TP
+.B pwn \fISUBCMD\fR
+Reverse-shell generator (all languages) and integrated listener.
+.SH EXAMPLES
+.TP
+\fBbal boost\fR
+Enter gaming performance mode.
+.TP
+\fBbal hack wifi wlan0\fR
+Launch WiFi audit workspace on wlan0.
+.TP
+\fBbal shield fortress\fR
+VPN kill-switch: nothing leaves the machine outside wg0.
+.TP
+\fBbal geo auto-on\fR
+From now on, BalOS chooses firewall + VPN based on the WiFi SSID.
+.SH FILES
+.TP
+.I /etc/skel/.config/balos/config
+Per-user preferences (default profile, panic actions, geofence rules).
+.TP
+.I /etc/balos/
+System-wide BalOS configs (firewall presets, geofence DB).
+.SH SEE ALSO
+.BR balshield (1),
+.BR balstealth (1),
+.BR balhack (1),
+.BR balwatch (1),
+.BR balvault (1)
+.SH AUTHORS
+BalOS Project <https://balos.io>

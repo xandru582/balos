@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=BalOS · Hack Workspace
+Comment=Pre-configured tmux workspaces for pentesting
+Exec=kitty -T balhack -e balhack
+Icon=utilities-terminal
+Terminal=false
+Categories=Security;Network;
+Keywords=balos;hack;pentest;nmap;metasploit;

@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+# balclip — encrypted clipboard history
+# Each entry AES-256 encrypted via age (modern, simple crypto)
+set -euo pipefail
+
+G='\033[0;32m'; C='\033[0;36m'; Y='\033[1;33m'; M='\033[0;35m'; B='\033[1m'; D='\033[2m'; N='\033[0m'
+
+DB="$HOME/.cache/balclip/entries"
+KEY="$HOME/.config/balclip/key.age"
+mkdir -p "$(dirname "$DB")" "$(dirname "$KEY")"
+
+need() { command -v "$1" &>/dev/null || { echo "install: sudo pacman -S $2"; exit 1; }; }
+need age age
+need wl-copy wl-clipboard 2>/dev/null || need xclip xclip
+
+usage() {
+cat << EOF
+${C}${B}balclip${N} — encrypted clipboard history
+
+  ${C}add${N}               Capture current clipboard
+  ${C}list${N}              List entries (fzf picker)
+  ${C}get [#]${N}           Copy entry back to clipboard (index or fzf)
+  ${C}rm <#>${N}            Remove entry
+  ${C}purge${N}              Delete all history
+  ${C}watch${N}             Daemon: auto-capture every clipboard change
+  ${C}key${N}               Regenerate encryption key
+EOF
+}
+
+# Clipboard helpers (Wayland or X11)
+_copy()  { if command -v wl-copy &>/dev/null; then wl-copy; else xclip -selection clipboard; fi; }
+_paste() { if command -v wl-paste &>/dev/null; then wl-paste -n 2>/dev/null; else xclip -selection clipboard -o 2>/dev/null; fi; }
+
+init_key() {
+    if [[ ! -f "$KEY" ]]; then
+        age-keygen -o "$KEY" 2>/dev/null
+        chmod 600 "$KEY"
+        echo -e "${G}✓ key created: $KEY${N}"
+    fi
+}
+
+encrypt() {
+    local pub=$(grep -oP 'public key: \K.*' "$KEY")
+    age -r "$pub" -o - 2>/dev/null
+}
+
+decrypt() {
+    age -d -i "$KEY" 2>/dev/null
+}
+
+cmd_add() {
+    init_key
+    local content=$(_paste)
+    [[ -z "$content" ]] && { echo "clipboard empty"; exit 1; }
+    local ts=$(date +%s)
+    local hash=$(echo -n "$content" | sha256sum | cut -c1-12)
+    local preview=$(echo -n "$content" | head -c 60 | tr -d '\n')
+    echo -n "$content" | encrypt > "$DB/${ts}-${hash}.age"
+    echo "${ts}|${preview}|${hash}" >> "$DB/.index"
+    echo -e "${G}✓ captured${N} ${D}(${preview})${N}"
+}
+
+cmd_list() {
+    init_key
+    [[ -f "$DB/.index" ]] || { echo "empty"; return; }
+    tac "$DB/.index" | awk -F'|' '{printf "%s  %s\n", strftime("%m-%d %H:%M", $1), $2}'
+}
+
+cmd_get() {
+    init_key
+    [[ -f "$DB/.index" ]] || { echo "empty"; exit 1; }
+    local pick="${1:-}"
+    local entry
+    if [[ -n "$pick" ]]; then
+        entry=$(tac "$DB/.index" | sed -n "${pick}p")
+    else
+        command -v fzf &>/dev/null || { echo "install fzf"; exit 1; }
+        entry=$(tac "$DB/.index" | awk -F'|' '{printf "%s | %s | %s\n", strftime("%m-%d %H:%M", $1), $2, $3}' | \
+                fzf --prompt='▶ clip · ' | awk -F' \\| ' '{print $NF}')
+        [[ -z "$entry" ]] && exit 0
+        entry=$(grep "$entry" "$DB/.index" | tail -1)
+    fi
+    local ts=$(echo "$entry" | cut -d'|' -f1)
+    local hash=$(echo "$entry" | cut -d'|' -f3)
+    local file="$DB/${ts}-${hash}.age"
+    [[ -f "$file" ]] || { echo "missing: $file"; exit 1; }
+    decrypt < "$file" | _copy
+    echo -e "${G}✓ copied to clipboard${N}"
+}
+
+cmd_purge() {
+    read -rp "Delete ALL history? [y/N] " r
+    [[ "${r,,}" == "y" ]] || exit 0
+    shred -zfu "$DB"/*.age 2>/dev/null || rm -f "$DB"/*.age
+    rm -f "$DB/.index"
+    echo -e "${G}✓ purged${N}"
+}
+
+cmd_watch() {
+    init_key
+    echo -e "${C}▸ watching clipboard (Ctrl-C to stop)${N}"
+    local last=""
+    while true; do
+        local cur=$(_paste)
+        if [[ -n "$cur" && "$cur" != "$last" ]]; then
+            cmd_add >/dev/null 2>&1
+            last="$cur"
+        fi
+        sleep 1
+    done
+}
+
+cmd_rm() {
+    local idx="${1:?index}"
+    local entry=$(tac "$DB/.index" | sed -n "${idx}p")
+    local ts=$(echo "$entry" | cut -d'|' -f1)
+    local hash=$(echo "$entry" | cut -d'|' -f3)
+    shred -zfu "$DB/${ts}-${hash}.age" 2>/dev/null
+    grep -v "^${ts}|" "$DB/.index" > "$DB/.index.tmp" && mv "$DB/.index.tmp" "$DB/.index"
+    echo -e "${G}✓ removed${N}"
+}
+
+case "${1:-list}" in
+    add|capture)      cmd_add ;;
+    list|ls)          cmd_list ;;
+    get|copy|paste)   shift; cmd_get "$@" ;;
+    rm|remove)        shift; cmd_rm "$@" ;;
+    purge|clear)      cmd_purge ;;
+    watch|daemon)     cmd_watch ;;
+    key)              rm -f "$KEY"; init_key ;;
+    help|-h|--help|*) usage ;;
+esac

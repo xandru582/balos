@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# balkernel-build — compile the custom BalKernel from installed PKGBUILD
+set -euo pipefail
+
+G='\033[0;32m'; C='\033[0;36m'; Y='\033[1;33m'; B='\033[1m'; N='\033[0m'
+
+PKGB_DIR="/usr/share/balos/kernel"
+BUILD_DIR="$HOME/.cache/balkernel-build"
+
+echo -e "${C}${B}⚙  BalKernel Builder${N}\n"
+
+[[ -d "$PKGB_DIR" ]] || { echo "Kernel PKGBUILD not found at $PKGB_DIR"; exit 1; }
+
+# Pre-flight
+if [[ $EUID -eq 0 ]]; then
+    echo -e "${Y}Run as regular user (makepkg refuses root).${N}"
+    exit 1
+fi
+
+# Check deps
+for dep in git bc pahole make gcc; do
+    command -v "$dep" &>/dev/null || { echo "Missing: $dep — sudo pacman -S base-devel"; exit 1; }
+done
+
+# Warn about disk space
+FREE_GB=$(df -BG "$HOME" | awk 'NR==2{gsub("G","",$4); print $4}')
+if (( FREE_GB < 30 )); then
+    echo -e "${Y}Warning: only ${FREE_GB}GB free in \$HOME — kernel build needs ~25GB.${N}"
+    read -rp "Continue anyway? [y/N] " ok
+    [[ "${ok,,}" == "y" ]] || exit 1
+fi
+
+mkdir -p "$BUILD_DIR"
+cp -r "$PKGB_DIR"/* "$BUILD_DIR/"
+cd "$BUILD_DIR"
+
+echo -e "${G}✓${N} Starting makepkg (this takes 30-60 min on modern laptops)..."
+echo -e "${C}Tip:${N} cancel anytime with Ctrl-C; progress preserved."
+echo ""
+
+time makepkg -s --noconfirm
+
+# Install
+echo ""
+echo -e "${G}✓${N} Kernel built. Installing..."
+sudo pacman -U --noconfirm linux-balkernel-*.pkg.tar.zst
+
+# Regenerate GRUB / systemd-boot entries
+if command -v grub-mkconfig &>/dev/null && [[ -d /boot/grub ]]; then
+    sudo grub-mkconfig -o /boot/grub/grub.cfg
+fi
+if [[ -d /boot/loader/entries ]]; then
+    sudo bootctl update 2>/dev/null || true
+fi
+
+cat << EOF
+
+${G}${B}✓ BalKernel installed.${N}
+
+Reboot and select ${C}BalOS (BalKernel)${N} from the boot menu.
+Verify with: ${C}uname -r${N}  (should show "-balkernel")
+
+EOF

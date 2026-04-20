@@ -1,0 +1,30 @@
+# BalKernel custom tuning patch
+#
+# This is a conceptual patch file — real patches would be generated from
+# maintained upstream trees. For now, the key tuning lives in balkernel.config
+# and sysctl tunables, which is the maintainable approach.
+#
+# Suggested real patches to apply for BalKernel v2:
+#
+# 1. CachyOS BORE scheduler tuning:
+#    https://github.com/CachyOS/kernel-patches/blob/master/6.12/sched/0001-bore.patch
+#
+# 2. Clear Linux performance patches (selectively):
+#    - 0104-pci-pme-wakeups.patch        (reduce PCI wake events, better battery)
+#    - 0108-smpboot-reuse-timer.patch    (faster boot)
+#    - 0116-initialize-ata-before-scsi.patch (storage init speed)
+#
+# 3. Wireless patches from @aircrack-ng tree for monitor mode:
+#    - Realtek RTL88xx monitor/injection support
+#    - MediaTek MT76 stability patches
+#
+# 4. AMDGPU overclocking support (requires unsafe overclock=1):
+#    https://github.com/sibradzic/amdgpu-clocks
+#
+# 5. Lowlatency preemption + PREEMPT_RT option (gaming):
+#    CONFIG_PREEMPT_RT=y
+#
+# To apply these: drop real .patch files into kernel/ next to this one.
+# The PKGBUILD prepare() loop will pick up *.patch automatically.
+#
+# Placeholder — does not modify any file, so patch -N will cleanly skip.

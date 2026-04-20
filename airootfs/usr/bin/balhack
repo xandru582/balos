@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+# BalHack — context-aware hacking workspace launcher
+# Opens tmux session with the right tools for the job
+set -euo pipefail
+
+G='\033[0;32m'; C='\033[0;36m'; M='\033[0;35m'; Y='\033[1;33m'; B='\033[1m'; N='\033[0m'
+
+MODE="${1:-menu}"
+
+need() { command -v "$1" &>/dev/null || { echo "Missing: $1"; return 1; }; }
+
+menu() {
+cat << EOF
+${M}${B}╔════════════════════════════════════════════╗${N}
+${M}${B}║           BalHack Workspaces               ║${N}
+${M}${B}╚════════════════════════════════════════════╝${N}
+
+  ${C}recon${N}      Network discovery & enumeration
+              ${Y}▸${N} nmap, masscan, netdiscover, arp-scan
+  ${C}web${N}        Web application pentesting
+              ${Y}▸${N} burpsuite, ffuf, sqlmap, nikto, whatweb
+  ${C}wifi${N}       WiFi auditing & WPA attacks
+              ${Y}▸${N} aircrack-ng, kismet, wifite, hcxtools
+  ${C}reverse${N}    Binary & malware analysis
+              ${Y}▸${N} radare2, ghidra, gdb+peda, binwalk
+  ${C}forensics${N}  Disk & memory forensics
+              ${Y}▸${N} sleuthkit, autopsy, volatility, foremost
+  ${C}crack${N}      Password / hash cracking
+              ${Y}▸${N} john, hashcat, hydra, crunch
+  ${C}osint${N}      Open-source intelligence gathering
+              ${Y}▸${N} theharvester, recon-ng, shodan, maltego
+
+${B}USAGE:${N}  bal hack <mode> [target]
+
+EOF
+}
+
+ws_recon() {
+    local target="${1:-}"
+    tmux new-session -d -s recon -n "scan"
+    tmux send-keys -t recon:scan "echo '── BalHack RECON workspace ──'" C-m
+    if [[ -n "$target" ]]; then
+        tmux send-keys -t recon:scan "sudo nmap -sV -sC -O -oA recon-${target//./_} ${target}" C-m
+    else
+        tmux send-keys -t recon:scan "echo 'Example: sudo nmap -sV -sC -O -oA scan target'" C-m
+    fi
+    tmux new-window -t recon -n "masscan"
+    tmux send-keys -t recon:masscan "echo 'sudo masscan -p1-65535 --rate=10000 <target>'" C-m
+    tmux new-window -t recon -n "enum4"
+    tmux send-keys -t recon:enum4 "echo 'enum4linux -a <target>  |  smbclient -L //<target>/'" C-m
+    tmux new-window -t recon -n "netdisc"
+    tmux send-keys -t recon:netdisc "sudo netdiscover -r \$(ip -4 addr show | grep -oP 'inet \K[0-9.]+/\d+' | head -1)" C-m
+    tmux attach -t recon
+}
+
+ws_web() {
+    local target="${1:-https://example.com}"
+    tmux new-session -d -s web -n "burp"
+    tmux send-keys -t web:burp "burpsuite &" C-m
+    tmux new-window -t web -n "ffuf"
+    tmux send-keys -t web:ffuf "echo 'ffuf -w /usr/share/seclists/Discovery/Web-Content/common.txt -u ${target}/FUZZ'" C-m
+    tmux new-window -t web -n "sqlmap"
+    tmux send-keys -t web:sqlmap "echo 'sqlmap -u \"${target}/?id=1\" --batch --dbs'" C-m
+    tmux new-window -t web -n "nuclei"
+    tmux send-keys -t web:nuclei "echo 'nuclei -u ${target} -severity critical,high'" C-m
+    tmux new-window -t web -n "whatweb"
+    tmux send-keys -t web:whatweb "whatweb -a 3 ${target}" C-m
+    tmux attach -t web
+}
+
+ws_wifi() {
+    local iface="${1:-wlan0}"
+    tmux new-session -d -s wifi -n "monitor"
+    tmux send-keys -t wifi:monitor "sudo airmon-ng check kill && sudo airmon-ng start ${iface}" C-m
+    sleep 2
+    tmux new-window -t wifi -n "scan"
+    tmux send-keys -t wifi:scan "sudo airodump-ng ${iface}mon" C-m
+    tmux new-window -t wifi -n "wifite"
+    tmux send-keys -t wifi:wifite "echo 'sudo wifite --kill --random-mac'" C-m
+    tmux new-window -t wifi -n "hcxdump"
+    tmux send-keys -t wifi:hcxdump "echo 'sudo hcxdumptool -i ${iface}mon -o capture.pcapng --enable_status=1'" C-m
+    tmux new-window -t wifi -n "kismet"
+    tmux send-keys -t wifi:kismet "echo 'sudo kismet -c ${iface}mon'" C-m
+    tmux attach -t wifi
+}
+
+ws_reverse() {
+    local bin="${1:-}"
+    tmux new-session -d -s reverse -n "radare2"
+    if [[ -n "$bin" ]]; then
+        tmux send-keys -t reverse:radare2 "r2 -A ${bin}" C-m
+    else
+        tmux send-keys -t reverse:radare2 "echo 'r2 -A <binary>   |   ghidra   |   cutter'" C-m
+    fi
+    tmux new-window -t reverse -n "gdb"
+    tmux send-keys -t reverse:gdb "echo 'gdb -q ${bin:-<binary>}'" C-m
+    tmux new-window -t reverse -n "strings"
+    [[ -n "$bin" ]] && tmux send-keys -t reverse:strings "strings -a ${bin} | less" C-m
+    tmux new-window -t reverse -n "binwalk"
+    [[ -n "$bin" ]] && tmux send-keys -t reverse:binwalk "binwalk -e ${bin}" C-m
+    tmux attach -t reverse
+}
+
+ws_forensics() {
+    tmux new-session -d -s forensics -n "disk"
+    tmux send-keys -t forensics:disk "echo 'dd if=/dev/sdX of=image.dd bs=4M status=progress'" C-m
+    tmux new-window -t forensics -n "sleuthkit"
+    tmux send-keys -t forensics:sleuthkit "echo 'fls -r image.dd  |  mmls image.dd  |  fsstat image.dd'" C-m
+    tmux new-window -t forensics -n "volatility"
+    tmux send-keys -t forensics:volatility "echo 'vol -f memory.raw windows.pslist'" C-m
+    tmux new-window -t forensics -n "foremost"
+    tmux send-keys -t forensics:foremost "echo 'foremost -i image.dd -o recovered/'" C-m
+    tmux attach -t forensics
+}
+
+ws_crack() {
+    tmux new-session -d -s crack -n "john"
+    tmux send-keys -t crack:john "echo 'john --wordlist=/usr/share/wordlists/rockyou.txt hashes.txt'" C-m
+    tmux new-window -t crack -n "hashcat"
+    tmux send-keys -t crack:hashcat "echo 'hashcat -m 22000 hash.hc22000 /usr/share/wordlists/rockyou.txt'" C-m
+    tmux new-window -t crack -n "hydra"
+    tmux send-keys -t crack:hydra "echo 'hydra -l admin -P rockyou.txt ssh://<target>'" C-m
+    tmux attach -t crack
+}
+
+ws_osint() {
+    local domain="${1:-example.com}"
+    tmux new-session -d -s osint -n "harvester"
+    tmux send-keys -t osint:harvester "theHarvester -d ${domain} -b all" C-m
+    tmux new-window -t osint -n "subs"
+    tmux send-keys -t osint:subs "sublist3r -d ${domain}" C-m
+    tmux new-window -t osint -n "whois"
+    tmux send-keys -t osint:whois "whois ${domain}" C-m
+    tmux attach -t osint
+}
+
+# Require tmux for workspaces
+need tmux 2>/dev/null || { echo "tmux required"; exit 1; }
+
+case "$MODE" in
+    recon|scan)            shift; ws_recon "$@" ;;
+    web|http)              shift; ws_web "$@" ;;
+    wifi|wireless)         shift; ws_wifi "$@" ;;
+    reverse|re|rev)        shift; ws_reverse "$@" ;;
+    forensics|forensic|fr) shift; ws_forensics ;;
+    crack|password|pass)   shift; ws_crack ;;
+    osint|recon-ng)        shift; ws_osint "$@" ;;
+    menu|help|*)           menu ;;
+esac

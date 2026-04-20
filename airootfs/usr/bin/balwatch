@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+# balwatch — real-time anomaly detector
+# Watches: new USB devices, suspicious processes, new network listeners,
+#          SSH logins, new Bluetooth trackers, WiFi deauth floods
+set -euo pipefail
+
+G='\033[0;32m'; R='\033[0;31m'; Y='\033[1;33m'; C='\033[0;36m'; M='\033[0;35m'
+B='\033[1m'; N='\033[0m'
+
+ACTION="${1:-status}"
+LOG="/var/log/balwatch.log"
+STATE_DIR="/var/lib/balwatch"
+PID_FILE="/run/balwatch.pid"
+
+alert() {
+    local msg="$1" urgency="${2:-normal}"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $msg" | tee -a "$LOG"
+    # Desktop notification (when GUI user logged in)
+    for u in $(loginctl list-users --no-legend 2>/dev/null | awk '{print $2}'); do
+        uid=$(id -u "$u" 2>/dev/null) || continue
+        DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${uid}/bus" \
+            runuser -u "$u" -- notify-send -u "$urgency" -i security-high "BalOS watch" "$msg" 2>/dev/null || true
+    done
+}
+
+start_daemon() {
+    [[ $EUID -ne 0 ]] && exec sudo "$0" start
+    [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null && { echo "balwatch already running"; exit 0; }
+
+    mkdir -p "$STATE_DIR"
+    : > "$LOG"
+    echo $$ > "$PID_FILE"
+    echo -e "${G}▸ balwatch started${N} — watching anomalies (log: $LOG)"
+
+    # Take baseline snapshots
+    lsusb > "$STATE_DIR/usb.baseline"
+    ss -tulnp 2>/dev/null | sort > "$STATE_DIR/listeners.baseline"
+    ps -eo pid,user,comm | sort > "$STATE_DIR/procs.baseline"
+    last -n 5 > "$STATE_DIR/logins.baseline"
+
+    # Fork into background watchers
+    (
+        while true; do
+            sleep 10
+
+            # 1. NEW USB devices
+            NEW=$(comm -13 "$STATE_DIR/usb.baseline" <(lsusb | sort))
+            if [[ -n "$NEW" ]]; then
+                while IFS= read -r line; do
+                    alert "NEW USB: $line" critical
+                    # If it's a HID keyboard, extra-loud alert (Rubber Ducky / OMG cable)
+                    if echo "$line" | grep -qiE 'keyboard|hid'; then
+                        alert "⚠ HID KEYBOARD inserted — possible Rubber Ducky / OMG cable!" critical
+                    fi
+                done <<< "$NEW"
+                lsusb > "$STATE_DIR/usb.baseline"
+            fi
+
+            # 2. NEW listening ports
+            NEW_PORTS=$(comm -13 "$STATE_DIR/listeners.baseline" <(ss -tulnp 2>/dev/null | sort))
+            if [[ -n "$NEW_PORTS" ]]; then
+                while IFS= read -r line; do
+                    [[ -z "$line" ]] && continue
+                    alert "NEW LISTENER: $(echo "$line" | tr -s ' ')" normal
+                done <<< "$NEW_PORTS"
+                ss -tulnp 2>/dev/null | sort > "$STATE_DIR/listeners.baseline"
+            fi
+
+            # 3. Suspicious processes (known hacker tools running as user)
+            for pat in 'nc -l' 'ncat -l' 'socat.*LISTEN' 'python.*SimpleHTTPServer' 'python.*http.server' 'php -S'; do
+                if pgrep -af "$pat" >/dev/null 2>&1; then
+                    marker="/run/balwatch-seen-$(echo "$pat" | md5sum | cut -c1-8)"
+                    if [[ ! -f "$marker" ]]; then
+                        alert "SUSPICIOUS PROC: $pat" normal
+                        touch "$marker"
+                    fi
+                fi
+            done
+
+            # 4. SSH logins
+            CURRENT=$(last -n 5)
+            if ! diff -q <(echo "$CURRENT") "$STATE_DIR/logins.baseline" &>/dev/null; then
+                alert "LOGIN CHANGE — check: last -n 5"
+                echo "$CURRENT" > "$STATE_DIR/logins.baseline"
+            fi
+
+            # 5. WiFi deauth flood (if monitor mode interface exists)
+            for mon in /sys/class/net/*mon; do
+                [[ -d "$mon" ]] || continue
+                IFACE=$(basename "$mon")
+                COUNT=$(timeout 3 tcpdump -i "$IFACE" -nn -c 100 type mgt subtype deauth 2>/dev/null | wc -l)
+                if (( COUNT > 20 )); then
+                    alert "⚠ WiFi DEAUTH FLOOD on $IFACE — someone's attacking the network!" critical
+                fi
+            done
+
+            # 6. Temperature check (overheat)
+            TEMP=$(sensors 2>/dev/null | grep -oP 'Package id 0:\s+\+\K[0-9.]+' | head -1)
+            if [[ -n "$TEMP" ]] && (( $(echo "$TEMP > 95" | bc -l 2>/dev/null || echo 0) )); then
+                alert "⚠ CPU overheating: ${TEMP}°C — consider bal saver" critical
+            fi
+
+        done
+    ) &
+
+    echo $! >> "$PID_FILE"
+    echo -e "${G}✓ daemon PID $(cat "$PID_FILE" | tail -1)${N}"
+}
+
+stop_daemon() {
+    [[ $EUID -ne 0 ]] && exec sudo "$0" stop
+    if [[ -f "$PID_FILE" ]]; then
+        while IFS= read -r pid; do
+            kill "$pid" 2>/dev/null && echo "stopped pid $pid"
+        done < "$PID_FILE"
+        rm -f "$PID_FILE"
+    fi
+    rm -f /run/balwatch-seen-*
+    echo -e "${Y}▸ balwatch stopped${N}"
+}
+
+show_status() {
+    if [[ -f "$PID_FILE" ]] && kill -0 "$(head -1 "$PID_FILE")" 2>/dev/null; then
+        echo -e "${G}● balwatch: running${N} (PID $(head -1 "$PID_FILE"))"
+    else
+        echo -e "${Y}○ balwatch: stopped${N}"
+    fi
+    echo ""
+    echo -e "${B}Recent alerts:${N}"
+    [[ -f "$LOG" ]] && tail -20 "$LOG" || echo "  (none yet)"
+}
+
+case "$ACTION" in
+    start)   start_daemon ;;
+    stop)    stop_daemon ;;
+    restart) stop_daemon; sleep 1; start_daemon ;;
+    log)     [[ -f "$LOG" ]] && tail -f "$LOG" || echo "no log yet" ;;
+    status|*) show_status ;;
+esac

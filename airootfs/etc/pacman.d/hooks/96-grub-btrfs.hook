@@ -1,0 +1,11 @@
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Operation = Remove
+Type = Path
+Target = usr/lib/modules/*/vmlinuz
+
+[Action]
+Description = BalOS: regenerate grub-btrfs snapshot menu
+When = PostTransaction
+Exec = /usr/bin/sh -c "command -v grub-mkconfig >/dev/null && grub-mkconfig -o /boot/grub/grub.cfg 2>/dev/null || true"

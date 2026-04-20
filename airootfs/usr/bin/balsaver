@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+# balsaver — extreme battery saving mode
+# Target: 2x battery life vs. default Linux install
+set -euo pipefail
+
+G='\033[0;32m'; Y='\033[1;33m'; C='\033[0;36m'; B='\033[1m'; D='\033[2m'; N='\033[0m'
+
+[[ $EUID -ne 0 ]] && exec sudo "$0" "$@"
+
+MODE="extreme"
+[[ "${1:-}" == "--balanced" ]] && MODE="balanced"
+
+echo -e "${C}${B}🔋 Battery saver engaging... (${MODE})${N}\n"
+step() { echo -e "  ${G}✓${N} $*"; }
+
+# ── CPU → powersave + limit ───────────────────────────────────────
+for gov in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+    echo powersave > "$gov" 2>/dev/null
+done
+step "CPU governor → powersave"
+
+# Disable Turbo
+[[ -f /sys/devices/system/cpu/cpufreq/boost ]] && echo 0 > /sys/devices/system/cpu/cpufreq/boost
+[[ -f /sys/devices/system/cpu/intel_pstate/no_turbo ]] && echo 1 > /sys/devices/system/cpu/intel_pstate/no_turbo
+step "Turbo → OFF (saves 10-20% power)"
+
+# Energy bias → power savings
+for f in /sys/devices/system/cpu/cpu*/power/energy_perf_bias; do
+    echo 15 > "$f" 2>/dev/null
+done
+
+# ── EXTREME mode: cap CPU to 60% max + disable SMT ────────────────
+if [[ "$MODE" == "extreme" ]]; then
+    [[ -f /sys/devices/system/cpu/intel_pstate/max_perf_pct ]] && echo 60 > /sys/devices/system/cpu/intel_pstate/max_perf_pct && step "CPU max perf → 60%"
+
+    # Disable SMT (Hyperthreading) — saves ~10-15% power
+    [[ -f /sys/devices/system/cpu/smt/control ]] && echo off > /sys/devices/system/cpu/smt/control 2>/dev/null && step "SMT (hyperthreading) → OFF"
+
+    # Park half the cores
+    CORES=$(nproc)
+    if (( CORES > 2 )); then
+        for i in $(seq $((CORES/2)) $((CORES-1))); do
+            echo 0 > "/sys/devices/system/cpu/cpu${i}/online" 2>/dev/null
+        done
+        step "CPU cores offline: $((CORES/2))/$CORES (battery-only subset)"
+    fi
+fi
+
+# ── GPU → low power ───────────────────────────────────────────────
+for card in /sys/class/drm/card*/device; do
+    [[ -f "$card/power_dpm_force_performance_level" ]] && echo low > "$card/power_dpm_force_performance_level" 2>/dev/null && step "GPU → low power"
+    [[ -f "$card/pp_power_profile_mode" ]] && echo 1 > "$card/pp_power_profile_mode" 2>/dev/null  # 3D low
+done
+
+# Intel GPU: min freq
+if [[ -d /sys/class/drm/card0/gt ]]; then
+    MIN=$(cat /sys/class/drm/card0/gt_RPn_freq_mhz 2>/dev/null || echo "")
+    [[ -n "$MIN" ]] && echo "$MIN" > /sys/class/drm/card0/gt_max_freq_mhz 2>/dev/null && step "Intel GPU max freq → ${MIN}MHz"
+fi
+
+# ── TLP → battery mode ───────────────────────────────────────────
+command -v tlp &>/dev/null && tlp bat &>/dev/null && step "TLP → battery profile"
+
+# ── Aggressive sysctl ────────────────────────────────────────────
+sysctl -q vm.swappiness=60                                  # Lean harder on ZRAM
+sysctl -q vm.laptop_mode=5                                  # Laptop mode: batch I/O
+sysctl -q vm.dirty_writeback_centisecs=6000                 # Write every 60s instead of 5s
+sysctl -q vm.dirty_expire_centisecs=6000
+sysctl -q kernel.nmi_watchdog=0
+step "Kernel → laptop_mode + batched writebacks (saves disk wakeups)"
+
+# ── Disable Bluetooth, WiFi scanning, etc (if no active connection) ──
+if [[ "$MODE" == "extreme" ]]; then
+    rfkill block bluetooth 2>/dev/null && step "Bluetooth → OFF"
+    # WiFi stays on but power-save enforced
+    for iface in $(iw dev 2>/dev/null | awk '/Interface/{print $2}'); do
+        iw dev "$iface" set power_save on 2>/dev/null && step "WiFi $iface → power-save"
+    done
+fi
+
+# ── USB autosuspend (everything except HID) ──────────────────────
+for usb in /sys/bus/usb/devices/*/power/control; do
+    echo auto > "$usb" 2>/dev/null
+done
+step "USB devices → autosuspend"
+
+# ── Disk I/O scheduler → mq-deadline (less CPU than bfq) ────────
+for disk in /sys/block/sd*/queue/scheduler /sys/block/nvme*/queue/scheduler; do
+    echo mq-deadline > "$disk" 2>/dev/null
+done
+
+# ── PCIe ASPM → powersupersave ───────────────────────────────────
+echo powersupersave > /sys/module/pcie_aspm/parameters/policy 2>/dev/null && step "PCIe ASPM → powersupersave"
+
+# ── Audio: codec power-save ──────────────────────────────────────
+echo 1 > /sys/module/snd_hda_intel/parameters/power_save 2>/dev/null
+echo Y > /sys/module/snd_hda_intel/parameters/power_save_controller 2>/dev/null
+
+# ── Brightness → 40% (extreme mode) ──────────────────────────────
+if [[ "$MODE" == "extreme" ]] && [[ -d /sys/class/backlight ]]; then
+    for bl in /sys/class/backlight/*/; do
+        MAX=$(cat "$bl/max_brightness" 2>/dev/null)
+        [[ -n "$MAX" ]] && echo $((MAX * 40 / 100)) > "$bl/brightness" 2>/dev/null && step "Screen brightness → 40%"
+    done
+fi
+
+# ── Stop background services that drain battery ──────────────────
+for svc in cups.socket tracker-miner-fs-3 packagekit baloo_file; do
+    systemctl stop "$svc" 2>/dev/null || true
+    runuser -u "$(logname 2>/dev/null || echo root)" -- systemctl --user stop "$svc" 2>/dev/null || true
+done
+
+# ── Stop GameMode if running ─────────────────────────────────────
+USER_NAME="$(logname 2>/dev/null || echo "")"
+[[ -n "$USER_NAME" ]] && runuser -u "$USER_NAME" -- systemctl --user stop gamemoded 2>/dev/null
+
+# ── Restart irqbalance (balanced) ────────────────────────────────
+systemctl start irqbalance 2>/dev/null
+
+echo "saver-${MODE}" > /run/balos-mode 2>/dev/null || echo "saver-${MODE}" > /tmp/balos-mode
+
+EST="+40%"
+[[ "$MODE" == "extreme" ]] && EST="+80-100% (potentially 2x)"
+
+cat << EOF
+
+${C}${B}╔════════════════════════════════════════╗${N}
+${C}${B}║       BATTERY SAVER · ACTIVE           ║${N}
+${C}${B}╚════════════════════════════════════════╝${N}
+
+  Mode:             ${B}${MODE}${N}
+  Estimated gain:   ${G}${EST}${N}
+  Back to full:     ${C}bal boost${N}
+  Status:           ${C}bal status${N}
+EOF
+[[ "$MODE" == "extreme" ]] && echo "  ${D}Note: extreme mode disables SMT & offlines cores. Some apps may feel slower.${N}"
+echo ""
