@@ -69,14 +69,24 @@ BOPTS=""
 $NO_CACHE && BOPTS="--no-cache"
 $KERNEL && BOPTS="$BOPTS --build-arg BUILD_KERNEL=1"
 
+# BalOS is x86_64 only; on ARM hosts (Apple Silicon) force amd64 emulation.
+HOST_ARCH="$(uname -m)"
+PLATFORM_FLAG=""
+if [[ "${HOST_ARCH}" != "x86_64" && "${HOST_ARCH}" != "amd64" ]]; then
+    PLATFORM_FLAG="--platform linux/amd64"
+    warn "Host is ${HOST_ARCH} — forcing linux/amd64 via emulation (build 2-3x slower)."
+fi
+
 step "Building Docker environment (first run ~15 min — AUR packages compile)..."
-docker build $BOPTS -t "${IMAGE_NAME}" "${SCRIPT_DIR}"
+# shellcheck disable=SC2086
+docker build ${PLATFORM_FLAG} $BOPTS -t "${IMAGE_NAME}" "${SCRIPT_DIR}"
 
 # ── Build ISO ────────────────────────────────────────────────────
-step "Forging BalOS ISO (20-40 min — go have coffee)..."
+step "Forging BalOS ISO (20-40 min on native x86_64, up to 2h on emulated ARM)..."
 info "You can tail progress in another terminal with: docker logs -f \$(docker ps -q)"
 
-docker run --rm --privileged \
+# shellcheck disable=SC2086
+docker run --rm --privileged ${PLATFORM_FLAG} \
     -v "${OUTPUT_DIR}:/output" \
     "${IMAGE_NAME}"
 

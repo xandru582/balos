@@ -1,7 +1,14 @@
 FROM archlinux:latest
 
-# Enable multilib
-RUN echo -e "\n[multilib]\nInclude = /etc/pacman.d/mirrorlist" >> /etc/pacman.conf
+# Enable multilib AND disable pacman's seccomp sandbox.
+# DisableSandbox is required when building under QEMU/Rosetta emulation
+# (arm64 host → amd64 container): the pacman 'alpm' sandbox user uses
+# syscalls that aren't properly translated, producing:
+#   "error restricting syscalls via seccomp: 22"
+# Harmless on native x86_64 — disables only pacman's internal privsep,
+# not the container's own sandboxing.
+RUN echo -e "\n[multilib]\nInclude = /etc/pacman.d/mirrorlist" >> /etc/pacman.conf && \
+    sed -i '/^\[options\]/a DisableSandbox' /etc/pacman.conf
 
 # Core update + build tools (include syslinux/grub/mtools for mkarchiso bootmodes)
 RUN pacman -Syu --noconfirm --needed \
