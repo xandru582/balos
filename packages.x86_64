@@ -219,6 +219,11 @@ xdg-user-dirs
 xdg-utils
 qt5-wayland
 qt6-wayland
+# SDDM custom theme (balos-matrix) deps — needs QtQuick.Controls + effects
+qt5-quickcontrols
+qt5-quickcontrols2
+qt5-graphicaleffects
+qt5-svg
 qt6ct
 kvantum
 kscreen
