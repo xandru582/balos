@@ -59,3 +59,7 @@ tmp/
 *.tmp
 *.bak
 *.orig
+
+# Local tooling state (Claude Code, etc.)
+.claude/
+build.log
