@@ -177,8 +177,8 @@ vulkan-mesa-layers
 lib32-vulkan-mesa-layers
 libva-mesa-driver
 lib32-libva-mesa-driver
-mesa-vdpau
-lib32-mesa-vdpau
+# mesa-vdpau / lib32-mesa-vdpau were merged into mesa upstream —
+# VDPAU drivers now ship inside the main mesa package.
 libva-utils
 vdpauinfo
 
@@ -306,7 +306,7 @@ hping
 mtr
 iperf3
 iperf
-netcat
+# 'netcat' is provided by 'openbsd-netcat' (listed further down).
 ncrack
 
 # ── Wireless / WiFi ─────────────────────────────────────────────
@@ -379,7 +379,7 @@ strace
 ltrace
 binwalk
 foremost
-exiftool
+perl-image-exiftool
 steghide
 # stegsolve is AUR-only (Java jar) — install via balinit if user opts-in.
 upx
@@ -394,7 +394,8 @@ volatility3
 dc3dd
 ddrescue
 testdisk
-extundelete
+# extundelete removed: orphaned upstream, dropped from Arch extra.
+# Use 'testdisk' / 'photorec' (bundled in testdisk) / 'foremost' instead.
 safecopy
 
 # ── Crypto / CTF ────────────────────────────────────────────────
