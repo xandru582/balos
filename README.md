@@ -7,6 +7,8 @@
   <img src="https://img.shields.io/badge/base-Arch%20Linux-1793d1?logo=archlinux&logoColor=white" />
   <img src="https://img.shields.io/badge/kernel-linux--zen%20%2B%20BalKernel-00ff88" />
   <img src="https://img.shields.io/badge/DE-KDE%20Plasma%206-1d99f3?logo=kde&logoColor=white" />
+  <img src="https://img.shields.io/badge/AI-Qwen2.5--1.5B%20offline-b580ff" />
+  <img src="https://github.com/xandru582/balos/actions/workflows/lint.yml/badge.svg" />
   <img src="https://img.shields.io/badge/license-MIT-00ff88" />
   <img src="https://img.shields.io/badge/status-alpha-ff8800" />
 </p>
@@ -26,6 +28,7 @@ most distros force you to trade against each other:
 | **play**   | Steam + Proton + Wine-Staging, 6 per-game performance profiles, 256µs PipeWire audio  |
 | **evade**  | 4-tier nftables firewall, Tor transparent proxy, MAC rotation, anti-forensics layer   |
 | **endure** | TLP + auto-cpufreq + powertop, target: **2× battery life vs. stock Arch**             |
+| **assist** | **BalAI** — 1.5 B offline LLM (Qwen2.5) as your command-line co-pilot, zero cloud     |
 
 Everything is glued together by a single CLI — `bal` — plus a dashboard
 (`balmonitor`), a dialog-based installer, and a KDE Plasma + Matrix-themed
@@ -38,6 +41,7 @@ desktop.
 - [Why BalOS?](#why-balos)
 - [Screenshots / demo](#screenshots--demo)
 - [Feature matrix](#feature-matrix)
+- [BalAI — offline AI assistant](#balai--offline-ai-assistant)
 - [The `bal` family of tools](#the-bal-family-of-tools)
 - [Build the ISO](#build-the-iso)
 - [Install to disk](#install-to-disk)
@@ -69,6 +73,11 @@ BalOS tries to be all four at once, tuned out of the box:
 - **Pentesting:** BlackArch repo enabled, `balhack` drops you into a 7-pane
   tmux workspace (recon / web / wifi / reverse / forensics / crack / osint),
   `balrecon` runs the full nmap → service → web → report pipeline.
+- **AI assistant:** `balai` — a Qwen2.5-1.5B (Q4) model (~1 GB) is pre-baked
+  into the squashfs, served locally by ollama on `127.0.0.1:11434`. It
+  translates intent into `bal*` commands, explains errors, generates
+  reverse-shell payloads, and never leaves the machine. No account, no
+  telemetry, no network calls.
 
 No single piece is unique — the integration is.
 
@@ -147,6 +156,88 @@ $ balmonitor
   cheatsheet, HTTP stager)
 - `balids` — Suricata wrapper
 
+### Offline AI assistant
+- `balai` — local command-line co-pilot powered by **Qwen2.5-1.5B-Instruct**
+  (Q4_K_M, ~1 GB) served by [ollama](https://ollama.com) on `127.0.0.1:11434`
+- Model pre-baked into the squashfs during ISO build — works **100 % offline**
+  from first boot, no account or network needed
+- System prompt pre-loaded with the full `bal*` command surface and 10
+  few-shot examples disambiguating common confusions (stealth vs shield,
+  saver vs boost, etc.)
+- Subcommands: `balai cmd` (intent → one shell command, with destructive-
+  pattern blocklist and confirm-before-run), `balai explain` (explain a
+  file / last command / piped output), `balai fix` (diagnose an error)
+- systemd drop-in hardens ollama: loopback-bind only, cloud/telemetry
+  disabled, 5 min keep-alive
+- Env overrides: `BALAI_MODEL` (swap model — 3B/7B for more RAM),
+  `BALAI_SYSTEM_PROMPT` (custom prompt for advanced users)
+
+---
+
+## BalAI — offline AI assistant
+
+A small fact: local LLMs are finally good enough to run on a laptop and
+actually help. BalOS ships one.
+
+```bash
+$ balai "how do I enable stealth mode"
+bal ▸ ```bash
+bal stealth on
+```
+Tor + DNSCrypt DoH + MAC randomize in one step.
+
+$ balai cmd "find all files modified in the last 10 minutes"
+suggested: find . -mmin -10 -type f
+run it? [y/N]
+
+$ kubectl get pods 2>&1 | balai explain
+The error is "The connection to the server localhost:8080 was refused." …
+```
+
+### What's inside
+- **Model:** `qwen2.5:1.5b-instruct-q4_K_M` (986 MB). Empirically the
+  smallest size that reliably follows the BalOS command surface; 0.5B
+  hallucinated invented commands (`bal wipe`, `mkusb`) ~50 % of the time.
+- **Runtime:** `ollama serve` via systemd, bound to `127.0.0.1:11434`.
+  `balai` will auto-start the service on first use.
+- **Storage:** `/var/lib/ollama/.ollama/models` — baked at ISO build time
+  so there's nothing to download on first boot.
+
+### Commands
+
+| `balai <cmd>`          | What it does                                                      |
+|------------------------|-------------------------------------------------------------------|
+| `balai`                | Interactive chat REPL (streaming, `/clear`, `/model`, `/help`)    |
+| `balai "question"`     | One-shot query, streams answer and exits                          |
+| `balai cmd "intent"`   | Intent → one shell command → confirm → run (destructive blocked)  |
+| `balai explain <file>` | Explain a file, `--last` command, or piped stdin                  |
+| `balai fix [error]`    | Diagnose an error and suggest a fix                               |
+| `balai model list`     | Show locally installed models and sizes                           |
+| `balai model pull X`   | Download another Qwen/Llama/Phi model (needs network)             |
+| `balai status`         | Service health, active model, RAM                                 |
+| `balai setup`          | Re-run first-run setup (enable service, pull default model)       |
+
+`bal ?` is a shortcut: `bal ? "how do I…"` → `balai "how do I…"`.
+
+### Privacy posture
+- No network calls at runtime (checked only when pulling a new model).
+- Systemd drop-in `balos.conf` sets `OLLAMA_HOST=127.0.0.1:11434`,
+  `OLLAMA_NO_CLOUD=true`, `OLLAMA_ORIGINS=http://localhost,http://127.0.0.1`.
+- Chat history in `$XDG_STATE_HOME/balai/history.jsonl` — wiped by
+  `bal panic hard`.
+- `balai cmd` blocks execution of destructive patterns (`rm -rf /`,
+  `mkfs`, `wipefs`, `dd of=/dev/…`, `cryptsetup erase`, fork bombs, …).
+
+### Upgrading the model
+
+Got more RAM? Try a bigger model:
+
+```bash
+balai model pull qwen2.5:3b-instruct-q4_K_M        # ~1.9 GB, cleaner output
+balai model pull qwen2.5:7b-instruct-q4_K_M        # ~4.4 GB, best quality
+echo 'export BALAI_MODEL=qwen2.5:3b-instruct-q4_K_M' >> ~/.zshrc
+```
+
 ---
 
 ## The `bal` family of tools
@@ -174,6 +265,7 @@ All commands also dispatch through a single unified CLI: `bal <subcommand>`.
 | `balwatch`  | Daemon: USB / port / SSH / deauth anomaly detection → notify-send         |
 | `balupdate` | Snapshot-backed pacman wrapper with auto-rollback                         |
 | `balnet`    | Network swiss-army (iface / speed / ports / conns / vpn up-down)          |
+| `balai`     | **Local offline LLM assistant** (Qwen2.5-1.5B) — `cmd`, `explain`, `fix` |
 | `balkernel-build` | Compile BalKernel from shipped PKGBUILD                             |
 | `balos-install`   | Dialog TUI installer (geo-TZ, GPU detect, LUKS2)                    |
 
@@ -188,9 +280,10 @@ can build on macOS, Linux, or Windows/WSL.
 
 ### Requirements
 - Docker (or Podman) ~20.10+
-- ~25 GB free disk space
-- ~20 min on a fast connection (first build; subsequent builds use cached
-  pacman packages)
+- ~30 GB free disk space (ISO + pacman cache + ~1 GB pre-baked AI model)
+- ~25 min on a fast connection (first build; subsequent builds use cached
+  pacman packages). The AI model pull (~1 GB Qwen2.5-1.5B) adds ~3 min to
+  the first build and is cached for subsequent ones.
 
 ### Quick build
 
@@ -252,12 +345,12 @@ First boot lands on SDDM with Matrix rain.
 │   Firefox · Steam · Wine · KDE · Kitty · LibreOffice · …            │
 ├────────────────────────────────────────────────────────────────────┤
 │                     bal CLI LAYER                                   │
-│   balboost · balsaver · balshield · balstealth · balhack · …        │
+│   balboost · balsaver · balshield · balstealth · balhack · balai …  │
 │   (thin bash scripts that orchestrate the system)                   │
 ├────────────────────────────────────────────────────────────────────┤
 │       SERVICES LAYER                                                │
 │  TLP · GameMode · nftables · dnscrypt-proxy · Tor · Suricata ·      │
-│  USBGuard · snapper · balwatch · PipeWire                           │
+│  USBGuard · snapper · balwatch · PipeWire · ollama (127.0.0.1)      │
 ├────────────────────────────────────────────────────────────────────┤
 │       KERNEL                                                        │
 │  linux-zen (default) / BalKernel (BORE+1kHz+PREEMPT+BBR)            │
@@ -318,7 +411,8 @@ Please read `CONTRIBUTING.md` before opening a PR.
 - [x] Dialog installer
 - [x] Snapper + grub-btrfs integration
 - [x] Suricata IDS baseline
-- [ ] Public CI pipeline (GitHub Actions building nightly ISOs)
+- [x] Offline AI assistant (`balai`, Qwen2.5-1.5B, pre-baked into squashfs)
+- [x] Public CI pipeline (GitHub Actions — lint on every push, nightly + tagged ISO builds)
 - [ ] Official binary repo signed by project key
 - [ ] Secure Boot with custom MOK
 - [ ] Hyprland "blade" edition alongside Plasma

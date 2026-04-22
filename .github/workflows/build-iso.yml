@@ -1,0 +1,93 @@
+name: build-iso
+
+# Public CI pipeline for BalOS ISO builds.
+#
+# Triggers:
+#   - Weekly nightly (Sunday 03:00 UTC) — rolling-release sanity check
+#   - On version tags (v*) — produces release artifacts
+#   - Manual (workflow_dispatch) — on-demand build
+#
+# The Ubuntu runner only ships with ~14 GB free disk and BalOS needs
+# ~30 GB mid-build, so we aggressively reclaim space first.
+
+on:
+  schedule:
+    - cron: '0 3 * * 0'   # Sunday 03:00 UTC nightly
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      with_kernel:
+        description: 'Also compile BalKernel (+45 min)'
+        required: false
+        default: 'false'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space on runner
+        # Reclaims ~30 GB by removing preinstalled toolchains we don't use.
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: false
+          swap-storage: true
+
+      - name: Show available disk
+        run: df -h /
+
+      - name: Set build flags
+        id: flags
+        run: |
+          flags=""
+          if [[ "${{ github.event.inputs.with_kernel }}" == "true" ]]; then
+            flags="--with-kernel"
+          fi
+          echo "flags=$flags" >> "$GITHUB_OUTPUT"
+
+      - name: Build BalOS ISO
+        run: |
+          export BALOS_WORK_DIR=/mnt/balos-work
+          sudo mkdir -p "$BALOS_WORK_DIR"
+          sudo chown "$USER" "$BALOS_WORK_DIR"
+          ./build.sh ${{ steps.flags.outputs.flags }}
+
+      - name: ISO metadata
+        id: meta
+        run: |
+          iso=$(ls output/balos-*.iso | head -1)
+          echo "path=$iso" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "$iso")" >> "$GITHUB_OUTPUT"
+          echo "size=$(du -h "$iso" | cut -f1)" >> "$GITHUB_OUTPUT"
+          sha256sum "$iso" > "${iso}.sha256"
+          echo "sha=$(cut -c1-16 "${iso}.sha256")" >> "$GITHUB_OUTPUT"
+
+      - name: Upload ISO artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.name }}
+          path: |
+            output/balos-*.iso
+            output/balos-*.iso.sha256
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Create GitHub Release (on tag)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            output/balos-*.iso
+            output/balos-*.iso.sha256
+          generate_release_notes: true
+          fail_on_unmatched_files: true
