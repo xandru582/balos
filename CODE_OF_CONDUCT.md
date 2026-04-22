@@ -31,7 +31,7 @@ Maintainers will remove comments, commits, or contributions that violate this
 Code of Conduct. In serious or repeated cases, offenders will be banned from
 the repository.
 
-Report incidents to **xandru2222+balos-coc@gmail.com**. Reports are
+Report incidents to **xandru2222@gmail.com**. Reports are
 confidential. We will not share your identity with the accused without your
 explicit consent.
 
