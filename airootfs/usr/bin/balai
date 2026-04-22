@@ -18,6 +18,7 @@ OLLAMA_HOST="${OLLAMA_HOST:-127.0.0.1:11434}"
 OLLAMA_URL="http://${OLLAMA_HOST}"
 HISTORY_FILE="${XDG_STATE_HOME:-$HOME/.local/state}/balai/history.jsonl"
 LAST_CMD_FILE="${XDG_RUNTIME_DIR:-/tmp}/balai-last-suggested"
+NOTES_FILE="${BALAI_NOTES_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/balai/notes.md}"
 
 G='\033[0;32m'; R='\033[0;31m'; Y='\033[1;33m'; C='\033[0;36m'; M='\033[0;35m'
 B='\033[1m'; D='\033[2m'; N='\033[0m'
@@ -327,19 +328,28 @@ needs_ctx() {
 with_ctx() {
     local prompt="$1"
     local mode="${BALAI_CTX_MODE:-auto}"
+    local inject_ctx=true
     case "$mode" in
-        never) printf '%s' "$prompt"; return ;;
-        always) ;;
-        auto|*)
-            needs_ctx "$prompt" || { printf '%s' "$prompt"; return; }
-            ;;
+        never) inject_ctx=false ;;
+        always) inject_ctx=true ;;
+        auto|*) needs_ctx "$prompt" || inject_ctx=false ;;
     esac
-    local ctx
-    ctx=$(gather_ctx)
-    if [[ -z "$ctx" ]]; then
+    local ctx="" notes=""
+    $inject_ctx && ctx=$(gather_ctx)
+    # Notes are injected regardless of ctx mode (unless user set `never`),
+    # because they are persistent user preferences, not live system state.
+    if [[ "$mode" != "never" ]] && [[ -r "$NOTES_FILE" ]] && [[ -s "$NOTES_FILE" ]]; then
+        # Cap notes at 2 KB so they don't blow the context window on 1.5B.
+        notes=$(head -c 2048 "$NOTES_FILE")
+    fi
+    if [[ -z "$ctx" && -z "$notes" ]]; then
         printf '%s' "$prompt"
     else
-        printf 'Current BalOS system state:\n%s\nUser question: %s' "$ctx" "$prompt"
+        {
+            [[ -n "$ctx" ]]   && printf 'Current BalOS system state:\n%s\n' "$ctx"
+            [[ -n "$notes" ]] && printf 'User preferences and notes (remember these):\n%s\n' "$notes"
+            printf 'User question: %s' "$prompt"
+        }
     fi
 }
 
@@ -558,6 +568,57 @@ $(cat "$tmpf")"
     rm -f "$tmpf"
 }
 
+# ─── persistent memory (notes) ──────────────────────────────────
+# Plain-text bullet file that the user curates. Injected into every
+# prompt so the model remembers preferences across sessions (model size,
+# preferred editor, home network SSID, allergies to certain commands…).
+cmd_remember() {
+    [[ $# -eq 0 ]] && die "usage: balai remember \"I prefer btrfs over ext4\""
+    mkdir -p "$(dirname "$NOTES_FILE")"
+    local line="$*"
+    # Strip leading dashes/bullets the user may have typed.
+    line="${line#- }"
+    line="${line#* }"
+    printf -- '- %s\n' "$*" >> "$NOTES_FILE"
+    ok "remembered. (${NOTES_FILE})"
+}
+
+cmd_forget() {
+    if [[ ! -s "$NOTES_FILE" ]]; then
+        echo "(nothing to forget — no notes yet)"; return 0
+    fi
+    if [[ $# -eq 0 ]]; then
+        # Confirm total wipe.
+        echo -e "${Y}This will delete ALL remembered notes:${N}"
+        sed 's/^/  /' "$NOTES_FILE"
+        printf '%s' "wipe everything? [y/N] "
+        local ans; read -r ans
+        ans=$(printf '%s' "$ans" | tr '[:upper:]' '[:lower:]')
+        [[ "$ans" == "y" || "$ans" == "yes" ]] || { echo "cancelled"; return 0; }
+        : > "$NOTES_FILE"
+        ok "all notes cleared"
+        return 0
+    fi
+    local pattern="$*"
+    local tmpf
+    tmpf=$(mktemp)
+    grep -viF -- "$pattern" "$NOTES_FILE" > "$tmpf" || true
+    local before after
+    before=$(wc -l < "$NOTES_FILE" 2>/dev/null | tr -d ' ')
+    after=$(wc -l < "$tmpf" 2>/dev/null | tr -d ' ')
+    mv "$tmpf" "$NOTES_FILE"
+    ok "removed $((before - after)) line(s) matching '$pattern'"
+}
+
+cmd_memory() {
+    if [[ ! -s "$NOTES_FILE" ]]; then
+        echo "(no notes yet — add some with: balai remember \"...\")"
+        return 0
+    fi
+    echo -e "${B}Remembered notes:${N}  ${D}${NOTES_FILE}${N}"
+    cat "$NOTES_FILE"
+}
+
 # One-line proactive tip based on current system state. Used by
 # `balmonitor --once` footer and `balai tip`. Non-streaming, <80 chars
 # ideal, times out fast so TUI callers are never blocked.
@@ -656,6 +717,9 @@ ${B}USAGE${N}
   balai ctx                      ${D}# show system context balai sees${N}
   balai doctor                   ${D}# diagnose system + AI summary${N}
   balai tip                      ${D}# one-line proactive suggestion${N}
+  balai remember "<fact>"        ${D}# add a persistent note the AI will always see${N}
+  balai memory                   ${D}# show remembered notes${N}
+  balai forget [pattern]         ${D}# drop notes matching pattern (or all)${N}
   balai model [list|pull|rm]     ${D}# manage local models${N}
   balai status                   ${D}# service + model health${N}
   balai setup                    ${D}# first-run: enable service + pull model${N}
@@ -687,6 +751,9 @@ case "$CMD" in
     ctx|context)          cmd_ctx ;;
     doctor|diag|diagnose) cmd_doctor ;;
     tip|suggest|hint)     cmd_tip ;;
+    remember|note)        cmd_remember "$@" ;;
+    forget)               cmd_forget "$@" ;;
+    memory|notes|recall)  cmd_memory ;;
     setup|init)           cmd_setup ;;
     status|health)        cmd_status ;;
     model|models)         cmd_model "$@" ;;

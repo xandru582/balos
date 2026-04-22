@@ -51,7 +51,7 @@ _bal() {
         update)  _values 'cmd' now rollback list-snapshots clean ;;
         watch)   _values 'cmd' start stop status log explain ;;
         kernel)  _values 'cmd' build install status ;;
-        ai)      _values 'subcmd' chat cmd explain fix ctx doctor tip model status setup help version ;;
+        ai)      _values 'subcmd' chat cmd explain fix ctx doctor tip remember memory forget model status setup help version ;;
         ids)     _values 'cmd' start stop status log rules update ;;
     esac
 }

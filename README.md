@@ -215,6 +215,9 @@ The error is "The connection to the server localhost:8080 was refused." …
 | `balai ctx`            | Dump the live system context balai would inject into your query   |
 | `balai doctor`         | Gather diagnostics (failed units, journal, disk, `.pacnew`) + AI summary |
 | `balai tip`            | One-line proactive suggestion based on live context (shown in `bal status`) |
+| `balai remember "…"`   | Add a persistent note (e.g. preferences) — injected into every prompt |
+| `balai memory`         | Show remembered notes                                             |
+| `balai forget [pat]`   | Remove matching notes (or wipe all with confirmation)             |
 | `balai model list`     | Show locally installed models and sizes                           |
 | `balai model pull X`   | Download another Qwen/Llama/Phi model (needs network)             |
 | `balai status`         | Service health, active model, RAM                                 |
@@ -264,6 +267,9 @@ BalAI is wired into every surface of the OS, not just its own CLI:
   section appended automatically (disable with `--no-ai`).
 - **Smart `aifix`** — with no args, reads the last command + its exit code
   (captured by zsh hooks) and feeds both to the model, so you never paste.
+- **Persistent memory** — `balai remember "I use btrfs and nvim"`. Notes live
+  at `$XDG_STATE_HOME/balai/notes.md` and get prepended to every prompt.
+  Wipe all: `balai forget`. Wipe one: `balai forget btrfs`.
 
 ### Context awareness
 
