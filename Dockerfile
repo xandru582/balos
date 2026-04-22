@@ -58,4 +58,14 @@ COPY . /build/profile/
 # Inject repo paths into the profile's pacman.conf
 RUN mkdir -p /output /tmp/balos-work
 
-CMD ["bash", "-c", "mkarchiso -v -w /tmp/balos-work -o /output /build/profile/ && echo '=== BALOS BUILD SUCCESS ==='"]
+# Stage the kernel recipe into airootfs/ so customize_airootfs.sh can see
+# it at /root/kernel inside the chroot. The source lives at the repo
+# root (kernel/) so makepkg can also consume it outside the ISO. Prior
+# to this fix, the kernel recipe was silently missing from every ISO
+# because `cp -r /root/kernel/* ...` had `|| true` on the end.
+CMD ["bash", "-c", "\
+    set -e; \
+    mkdir -p /build/profile/airootfs/root/kernel; \
+    cp -r /build/profile/kernel/. /build/profile/airootfs/root/kernel/; \
+    mkarchiso -v -w /tmp/balos-work -o /output /build/profile/; \
+    echo '=== BALOS BUILD SUCCESS ==='"]

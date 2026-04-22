@@ -1,0 +1,19 @@
+[Trigger]
+Type = Path
+Operation = Install
+Operation = Upgrade
+Operation = Remove
+Target = usr/lib/modules/*/pkgbase
+
+[Trigger]
+Type = Package
+Operation = Upgrade
+Target = mkinitcpio
+Target = mkinitcpio-git
+Target = systemd
+
+[Action]
+Description = Updating BalKernel initramfs...
+When = PostTransaction
+NeedsTargets
+Exec = /usr/share/libalpm/scripts/mkinitcpio

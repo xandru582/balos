@@ -1,0 +1,26 @@
+# BalOS default I/O scheduler selection.
+# Installed by the linux-balkernel package at
+# /usr/lib/udev/rules.d/99-balos-io-scheduler.rules.
+#
+# Matches what the hot paths actually are on each device class:
+#   - NVMe         → none       (the device already does best-effort)
+#   - SATA/USB SSD → mq-deadline (best latency for flash, low overhead)
+#   - rotational   → bfq        (best fairness under load for HDDs)
+#   - loop         → none
+
+ACTION=="add|change", KERNEL=="nvme[0-9]*n[0-9]*", ATTR{queue/scheduler}="none"
+ACTION=="add|change", KERNEL=="sd[a-z]*|vd[a-z]*|mmcblk[0-9]*", \
+    ATTR{queue/rotational}=="0", ATTR{queue/scheduler}="mq-deadline"
+ACTION=="add|change", KERNEL=="sd[a-z]*|vd[a-z]*|mmcblk[0-9]*", \
+    ATTR{queue/rotational}=="1", ATTR{queue/scheduler}="bfq"
+ACTION=="add|change", KERNEL=="loop[0-9]*", ATTR{queue/scheduler}="none"
+
+# Sensible I/O queue depths — Arch defaults are conservative for NVMe.
+ACTION=="add|change", KERNEL=="nvme[0-9]*n[0-9]*", ATTR{queue/nr_requests}="1024"
+ACTION=="add|change", KERNEL=="sd[a-z]*", ATTR{queue/rotational}=="0", \
+    ATTR{queue/nr_requests}="512"
+
+# Read-ahead tuning (conservative — avoids blowing the page cache on
+# small-RAM laptops; gamers on 32 GB boxes can override via /etc).
+ACTION=="add|change", KERNEL=="nvme[0-9]*n[0-9]*|sd[a-z]*", \
+    ATTR{queue/read_ahead_kb}="256"

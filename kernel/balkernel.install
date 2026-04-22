@@ -1,0 +1,55 @@
+# pacman .install script for linux-balkernel.
+# Runs on upgrade to (re)register the kernel with the bootloader.
+# Delegates to existing tooling — we never roll our own grub.cfg logic.
+
+post_install() {
+    _update_bootloader
+    _print_banner
+}
+
+post_upgrade() {
+    _update_bootloader
+}
+
+pre_remove() {
+    # Clean bootloader entry so users don't get a ghost kernel.
+    if command -v bootctl >/dev/null 2>&1 && [ -d /boot/loader/entries ]; then
+        rm -f /boot/loader/entries/*balkernel*.conf
+    fi
+    rm -f /boot/initramfs-linux-balkernel.img \
+          /boot/initramfs-linux-balkernel-fallback.img \
+          /boot/vmlinuz-linux-balkernel.bak 2>/dev/null
+}
+
+post_remove() {
+    _update_bootloader
+}
+
+_update_bootloader() {
+    # Prefer GRUB, fall back to systemd-boot, fall back to rEFInd.
+    if command -v grub-mkconfig >/dev/null 2>&1 && [ -d /boot/grub ]; then
+        echo "  > regenerating GRUB config..."
+        grub-mkconfig -o /boot/grub/grub.cfg 2>/dev/null || true
+    elif command -v bootctl >/dev/null 2>&1 && [ -d /boot/loader ]; then
+        echo "  > refreshing systemd-boot entries..."
+        bootctl update 2>/dev/null || true
+    elif command -v refind-install >/dev/null 2>&1; then
+        echo "  > refreshing rEFInd..."
+        refind-install --usedefault "$(findmnt -n -o SOURCE /boot 2>/dev/null)" 2>/dev/null || true
+    fi
+}
+
+_print_banner() {
+    cat <<'MSG'
+
+  ▓▓▓  BalKernel installed.
+       Reboot and select "BalOS (BalKernel)" from the boot menu.
+       Rollback at any time with:  bal update rollback
+
+       Recommended cmdline (already in /usr/lib/balos/kernel-cmdline.conf):
+         quiet loglevel=3 mitigations=auto lsm=landlock,lockdown,yama,loadpin,integrity,apparmor,bpf
+         init_on_alloc=1 init_on_free=1 page_alloc.shuffle=1
+         slab_nomerge pti=on vsyscall=none randomize_kstack_offset=on
+
+MSG
+}

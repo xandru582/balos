@@ -113,8 +113,32 @@ $ balmonitor
 ## Feature matrix
 
 ### Kernel & power
-- `linux-zen` default; optional custom **BalKernel** (BORE scheduler, 1000 Hz,
-  PREEMPT, BBR, WiFi monitor mode patches for Atheros/Realtek/MT76)
+- `linux-zen` default; optional custom **BalKernel**. See
+  [`kernel/balkernel.config`](kernel/balkernel.config) for the full,
+  annotated 400-symbol fragment. Highlights:
+  - **Hardening**: KASLR, KPTI, FORTIFY_SOURCE, `init_on_alloc=1`,
+    `init_on_free=1`, `slab_nomerge`, hardened slab freelist,
+    stack-protector-strong, refcount full, lockdown LSM, apparmor +
+    landlock + yama + loadpin + integrity + bpf stacked, BPF JIT
+    always-on + `BPF_UNPRIV_DEFAULT_OFF`, module signing (not forced
+    so out-of-tree aircrack/rtl drivers still load).
+  - **Latency**: `PREEMPT_DYNAMIC`, 1000 Hz tick, RCU nocb, BORE
+    scheduler, `preempt=full` + `threadirqs` in the cmdline.
+  - **Memory**: MGLRU enabled by default, transparent hugepages on
+    madvise, ZSTD-compressed ZRAM + ZSWAP.
+  - **Network**: BBR default + CAKE default qdisc, WireGuard built in.
+  - **I/O**: NVMe → none, SSD → mq-deadline, HDD → bfq (udev rule).
+  - **Gaming/Wine**: futex + autogroup + schedutil + vm.max_map_count
+    raised to 1 Mi.
+  - **Pentesting**: monitor-mode drivers (ath9k/10k/11k, rtw88/89,
+    rtl8xxxu, mt76, iwlwifi).
+- Ships companion drop-ins: `/usr/lib/sysctl.d/99-balos-kernel.conf`
+  (runtime hardening), `/usr/lib/udev/rules.d/99-balos-io-scheduler.rules`
+  (I/O scheduler per device class), `/usr/lib/balos/kernel-cmdline.conf`
+  (canonical boot parameters). These ship with the ISO **even if you
+  don't rebuild the kernel**, so the live box already benefits.
+- Build-time safety check in the PKGBUILD: refuses to ship if any of
+  14 required hardening switches dropped during `make olddefconfig`.
 - TLP + auto-cpufreq + powertop auto-tune
 - PCIe ASPM powersupersave, SATA ALPM, USB autosuspend
 - ZRAM zstd swap in place of disk swap

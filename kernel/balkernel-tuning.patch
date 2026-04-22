@@ -1,30 +1,26 @@
-# BalKernel custom tuning patch
+# BalKernel in-tree tuning patch
+# ─────────────────────────────────────────────────────────────────
+# Keep this patch small and well-justified — every line we apply to
+# upstream increases our rebase debt. Anything that can live in
+# balkernel.config, /usr/lib/sysctl.d/99-balos-kernel.conf, or the
+# kernel cmdline goes THERE instead of here.
 #
-# This is a conceptual patch file — real patches would be generated from
-# maintained upstream trees. For now, the key tuning lives in balkernel.config
-# and sysctl tunables, which is the maintainable approach.
+# Current tweaks:
 #
-# Suggested real patches to apply for BalKernel v2:
-#
-# 1. CachyOS BORE scheduler tuning:
-#    https://github.com/CachyOS/kernel-patches/blob/master/6.12/sched/0001-bore.patch
-#
-# 2. Clear Linux performance patches (selectively):
-#    - 0104-pci-pme-wakeups.patch        (reduce PCI wake events, better battery)
-#    - 0108-smpboot-reuse-timer.patch    (faster boot)
-#    - 0116-initialize-ata-before-scsi.patch (storage init speed)
-#
-# 3. Wireless patches from @aircrack-ng tree for monitor mode:
-#    - Realtek RTL88xx monitor/injection support
-#    - MediaTek MT76 stability patches
-#
-# 4. AMDGPU overclocking support (requires unsafe overclock=1):
-#    https://github.com/sibradzic/amdgpu-clocks
-#
-# 5. Lowlatency preemption + PREEMPT_RT option (gaming):
-#    CONFIG_PREEMPT_RT=y
-#
-# To apply these: drop real .patch files into kernel/ next to this one.
-# The PKGBUILD prepare() loop will pick up *.patch automatically.
-#
-# Placeholder — does not modify any file, so patch -N will cleanly skip.
+# 1. Tag /proc/version so `uname -v` / `cat /proc/version` clearly
+#    identify the build as BalKernel. Makes bug reports easier
+#    ("BalOS" in the string) and lets bal* tools detect at runtime
+#    whether they're on the blessed kernel.
+# ─────────────────────────────────────────────────────────────────
+
+--- a/init/version-timestamp.c
++++ b/init/version-timestamp.c
+@@ -10,7 +10,7 @@
+ #include <linux/utsname.h>
+
+ struct uts_namespace init_uts_ns = {
+-	.name = {
++	.name = {        /* BalKernel build */
+ 		.sysname	= UTS_SYSNAME,
+ 		.nodename	= "(none)",
+ 		.release	= UTS_RELEASE,

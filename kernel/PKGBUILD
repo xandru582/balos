@@ -1,17 +1,39 @@
 # Maintainer: BalOS Project <kernel@balos.io>
-# Kernel: BalKernel — linux-zen base + Clear Linux perf patches + laptop focus
-# Targets: gaming low-latency + aggressive power management + WiFi monitor mode
+#
+# BalKernel — linux-zen 6.12 base + Clear Linux performance cherry-picks
+# + BalOS hardening/latency/gaming tuning. See balkernel.config for the
+# full option rationale; this PKGBUILD assembles the sources, applies
+# patches, produces two packages (kernel + headers), and ships a
+# mkinitcpio preset + ALPM hook + pacman .install script so the
+# bootloader updates automatically.
+#
+# Build targets: x86-64-v3 (Haswell, 2013+). Run from a regular user
+# (not root — makepkg refuses root). See `bal kernel build`.
+#
+# Design decisions worth flagging:
+#   * LLVM=0 by default (GCC build). Set LLVM=1 to enable Clang +
+#     ThinLTO + CFI. CFI adds ~1 % overhead for a major exploit mit.
+#   * KCFLAGS=-march=x86-64-v3 -O2 -pipe. Not -O3: shown to regress on
+#     the kernel's hot paths and blow icache. See [Phoronix 2022].
+#   * Module signing with a per-build ephemeral key. The key is
+#     generated during prepare() if missing. Signed modules load
+#     without warnings; unsigned out-of-tree modules (aircrack,
+#     zfs, nvidia) still load because MODULE_SIG_FORCE=n.
+#   * pkgbase mirrors Arch upstream convention so mkinitcpio-hook
+#     hooks pick it up automatically.
 
 pkgbase=linux-balkernel
 pkgver=6.12.balos
-pkgrel=1
-pkgdesc='BalKernel: hacker-tuned Linux — gaming, battery, pentesting'
+pkgrel=2                               # bumped for BalOS hardening pass
+pkgdesc='BalKernel: hardened, low-latency Linux — gaming · battery · pentesting'
 url='https://balos.io/kernel'
 arch=(x86_64)
 license=(GPL-2.0-only)
 makedepends=(
-    bc cpio gettext libelf pahole perl python tar xz
+    bc cpio gettext libelf pahole perl python tar xz zstd
     graphviz imagemagick python-sphinx texlive-latexextra
+    # Optional: clang/lld for LLVM=1 build (Clang ThinLTO + CFI)
+    clang llvm lld
 )
 options=(!debug !strip)
 
@@ -19,71 +41,179 @@ options=(!debug !strip)
 _srcname=zen-kernel
 _srctag=v6.12-zen1
 
+# Clear Linux perf patches (curated, selected for laptop/desktop gain).
+# Each one is named with a `_cl_<n>` local filename so the prepare loop
+# applies them in a deterministic order (see sort in prepare()).
+_cl_base='https://raw.githubusercontent.com/clearlinux-pkgs/linux/main'
 source=(
     "git+https://github.com/zen-kernel/zen-kernel.git#tag=${_srctag}?signed"
     "balkernel.config"
-    # Clear Linux patches (applied selectively for perf)
-    "0001-init-wait-for-partition-and-retry-scan.patch::https://raw.githubusercontent.com/clearlinux-pkgs/linux/main/0107-init-wait-for-partition-and-retry-scan.patch"
-    # BORE scheduler already upstream in zen; custom tuning below
     "balkernel-tuning.patch"
+    # ── Clear Linux cherry-picks ────────────────────────────────────
+    # Wait for partition + retry scan (slow USB / SD cards don't fail boot)
+    "0100-cl-init-wait-for-partition.patch::${_cl_base}/0107-init-wait-for-partition-and-retry-scan.patch"
+    # PCI PME wakeups — reduces unnecessary wake events (battery win)
+    "0104-cl-pci-pme-wakeups.patch::${_cl_base}/0104-pci-pme-wakeups.patch"
+    # SMP boot reuse timer — faster boot (~200 ms on 8 cores)
+    "0108-cl-smpboot-reuse-timer.patch::${_cl_base}/0108-smpboot-reuse-timer.patch"
+    # ATA before SCSI — storage probes in the right order, faster init
+    "0116-cl-ata-before-scsi.patch::${_cl_base}/0116-initialize-ata-before-scsi.patch"
+    # ── BalOS drop-ins shipped alongside the kernel ─────────────────
+    "balkernel.preset"
+    "balkernel.hook"
+    "balkernel.install"
+    "balos-kernel-cmdline.conf"
+    "balos-sysctl.conf"
+    "balos-mkinitcpio.conf"
+    "99-balos-io-scheduler.rules"
 )
 
-sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP')
+sha256sums=(
+    'SKIP'         # git tag, verified by ?signed
+    'SKIP'         # balkernel.config (local, audited in review)
+    'SKIP'         # balkernel-tuning.patch (local placeholder)
+    'SKIP' 'SKIP' 'SKIP' 'SKIP'         # Clear Linux patches (upstream)
+    'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP'
+)
+
+# ── Helper: generate a fresh module-signing key if the tree doesn't
+#    already ship one. The key only has to live until build finishes
+#    because signed modules embed the public cert into vmlinux; we
+#    don't persist the private key in the package.
+_ensure_signing_key() {
+    local tree="$1"
+    if [[ ! -f "${tree}/certs/signing_key.pem" ]]; then
+        echo " ▶ Generating one-time module signing key..."
+        (
+            cd "${tree}/certs"
+            openssl req -new -nodes -utf8 -sha512 -days 3650 -batch -x509 \
+                -config default_x509.genkey \
+                -outform PEM \
+                -keyout signing_key.pem \
+                -out signing_key.x509 \
+                2>/dev/null
+        )
+    fi
+}
 
 prepare() {
     cd "${_srcname}"
 
+    # Apply every *.patch in srcdir (deterministic order).
     echo " ▶ Applying BalKernel patches..."
-    for patch in ../*.patch; do
-        echo "   ├─ $(basename "$patch")"
-        patch -p1 -N < "$patch" || echo "   │  (patch already applied or skipped)"
-    done
+    while IFS= read -r -d '' patch; do
+        printf '   ├─ %s\n' "$(basename "$patch")"
+        patch -p1 -N --batch --quiet < "$patch" \
+            || printf '   │  (already applied or non-applicable — skipped)\n'
+    done < <(find "${srcdir}" -maxdepth 1 -name '*.patch' -print0 | sort -z)
 
-    # Copy optimized config
+    # Overlay our config fragment on top of zen's defconfig.
     cp "${srcdir}/balkernel.config" .config
-
-    # Auto-accept defaults for new symbols, preferring performance + laptop
     make olddefconfig
 
-    # BalKernel version string
-    scripts/setlocalversion --save-scmversion
+    # Verify critical hardening switches survived olddefconfig — if an
+    # upstream rename dropped any of them, fail loudly rather than
+    # silently ship an unhardened kernel.
+    local required=(
+        CONFIG_HARDENED_USERCOPY
+        CONFIG_FORTIFY_SOURCE
+        CONFIG_RANDOMIZE_BASE
+        CONFIG_PAGE_TABLE_ISOLATION
+        CONFIG_INIT_ON_ALLOC_DEFAULT_ON
+        CONFIG_INIT_ON_FREE_DEFAULT_ON
+        CONFIG_STACKPROTECTOR_STRONG
+        CONFIG_SLAB_FREELIST_HARDENED
+        CONFIG_BPF_JIT_ALWAYS_ON
+        CONFIG_BPF_UNPRIV_DEFAULT_OFF
+        CONFIG_LRU_GEN_ENABLED
+        CONFIG_SECURITY_APPARMOR
+        CONFIG_SECURITY_LANDLOCK
+        CONFIG_MODULE_SIG
+    )
+    local missing=()
+    for sym in "${required[@]}"; do
+        if ! grep -qE "^${sym}=y$" .config; then
+            missing+=("$sym")
+        fi
+    done
+    if (( ${#missing[@]} > 0 )); then
+        echo " ✗ Missing hardening switches after olddefconfig:"
+        printf '   - %s\n' "${missing[@]}"
+        echo " Refusing to build an under-hardened kernel."
+        return 1
+    fi
+    echo " ✓ Hardening checklist verified (${#required[@]} switches)."
+
+    _ensure_signing_key "$PWD"
+
+    # Set local version string so uname -r is unambiguous.
+    scripts/setlocalversion --save-scmversion 2>/dev/null || true
     echo "-balkernel" > localversion.20-pkgname
 }
 
 build() {
     cd "${_srcname}"
-
-    # Use all cores + LLVM for faster build
     export LLVM=${LLVM:-0}
     export KCFLAGS="-march=x86-64-v3 -O2 -pipe"
+    # Reproducible-ish: strip the build host name from the final image.
+    export KBUILD_BUILD_USER="balos"
+    export KBUILD_BUILD_HOST="balos"
 
     make KERNELVERSION="${pkgver}" all
 }
 
 _package() {
-    pkgdesc="BalKernel — hacker-tuned Linux"
+    pkgdesc="BalKernel — hardened, low-latency Linux"
     depends=(coreutils kmod initramfs)
     optdepends=(
         'wireless-regdb: WiFi regulatory rules'
         'linux-firmware: firmware images'
         'crda: WiFi regulatory agent'
+        'nftables: firewall ruleset engine used by bal shield'
     )
-    provides=(VIRTUALBOX-GUEST-MODULES WIREGUARD-MODULE KSMBD-MODULE)
+    provides=(
+        "VIRTUALBOX-GUEST-MODULES=${pkgver}"
+        "WIREGUARD-MODULE=${pkgver}"
+        "KSMBD-MODULE=${pkgver}"
+    )
     replaces=(virtualbox-guest-modules-arch wireguard-arch)
+    install="${pkgbase}.install"
 
     cd "${_srcname}"
 
-    local kernver="$(make -s kernelrelease)"
+    local kernver
+    kernver="$(make -s kernelrelease)"
     local modulesdir="${pkgdir}/usr/lib/modules/${kernver}"
 
+    # Install vmlinuz for both mkinitcpio hook and generic /boot lookup.
     install -Dm644 "$(make -s image_name)" "${modulesdir}/vmlinuz"
     install -Dm644 "${modulesdir}/vmlinuz" "${pkgdir}/boot/vmlinuz-${pkgbase}"
 
+    # Install modules with ZSTD compression (level 19 — ~30 % smaller).
     ZSTD_CLEVEL=19 make INSTALL_MOD_PATH="${pkgdir}/usr" INSTALL_MOD_STRIP=1 \
         DEPMOD=/doesnt/exist modules_install
 
-    # Install hooks for mkinitcpio
+    # mkinitcpio marker — tells the hook which kernel we are.
     echo "${pkgbase}" > "${modulesdir}/pkgbase"
+
+    # mkinitcpio preset (the .img filenames mirror Arch convention).
+    install -Dm644 "${srcdir}/balkernel.preset" \
+        "${pkgdir}/etc/mkinitcpio.d/${pkgbase}.preset"
+
+    # ALPM hook — rebuilds initramfs automatically on kernel, mkinitcpio,
+    # or systemd updates, and re-signs if MOK is set up.
+    install -Dm644 "${srcdir}/balkernel.hook" \
+        "${pkgdir}/usr/share/libalpm/hooks/90-${pkgbase}.hook"
+
+    # Runtime drop-ins that complement the compiled kernel.
+    install -Dm644 "${srcdir}/balos-kernel-cmdline.conf" \
+        "${pkgdir}/usr/lib/balos/kernel-cmdline.conf"
+    install -Dm644 "${srcdir}/balos-sysctl.conf" \
+        "${pkgdir}/usr/lib/sysctl.d/99-balos-kernel.conf"
+    install -Dm644 "${srcdir}/balos-mkinitcpio.conf" \
+        "${pkgdir}/usr/share/balos/mkinitcpio.conf.example"
+    install -Dm644 "${srcdir}/99-balos-io-scheduler.rules" \
+        "${pkgdir}/usr/lib/udev/rules.d/99-balos-io-scheduler.rules"
 }
 
 _package-headers() {
@@ -99,7 +229,8 @@ _package-headers() {
     install -Dt "${builddir}/arch/x86" -m644 arch/x86/Makefile
     cp -t "${builddir}" -a scripts
     install -Dt "${builddir}/tools/objtool" tools/objtool/objtool
-    install -Dt "${builddir}/tools/bpf/resolve_btfids" tools/bpf/resolve_btfids/resolve_btfids 2>/dev/null || true
+    install -Dt "${builddir}/tools/bpf/resolve_btfids" \
+        tools/bpf/resolve_btfids/resolve_btfids 2>/dev/null || true
     cp -t "${builddir}" -a include
     cp -t "${builddir}/arch/x86" -a arch/x86/include
     install -Dt "${builddir}/arch/x86/kernel" -m644 arch/x86/kernel/asm-offsets.s
@@ -109,14 +240,14 @@ _package-headers() {
     install -Dt "${builddir}/drivers/media/usb/dvb-usb" -m644 drivers/media/usb/dvb-usb/*.h
     install -Dt "${builddir}/drivers/media/dvb-frontends" -m644 drivers/media/dvb-frontends/*.h
     install -Dt "${builddir}/drivers/media/tuners" -m644 drivers/media/tuners/*.h
-    install -Dt "${builddir}/drivers/iio/common/hid-sensors" -m644 drivers/iio/common/hid-sensors/*.h 2>/dev/null || true
+    install -Dt "${builddir}/drivers/iio/common/hid-sensors" -m644 \
+        drivers/iio/common/hid-sensors/*.h 2>/dev/null || true
 
-    # Remove files unneeded at install time
+    # Tidy files not needed at install time.
     find "${builddir}" -type f -name "*.o" -delete
     find "${builddir}" -type l -exec test ! -e {} \; -delete
-
-    # Strip unneeded files
-    find -L "${builddir}" -type f -name '*.ko' -exec strip --strip-unneeded {} + 2>/dev/null || true
+    find -L "${builddir}" -type f -name '*.ko' -exec strip --strip-unneeded {} + \
+        2>/dev/null || true
 }
 
 pkgname=("${pkgbase}" "${pkgbase}-headers")

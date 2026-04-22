@@ -167,8 +167,28 @@ do
 done
 
 # ── Place kernel recipe for post-install build ──────────────────
+# The Dockerfile CMD copies kernel/ into airootfs/root/kernel before
+# mkarchiso runs, so the tree MUST exist here. Fail loudly if it
+# doesn't — silent skips in this branch were why earlier ISOs
+# shipped an empty /usr/share/balos/kernel.
+if [ ! -d /root/kernel ] || [ -z "$(ls -A /root/kernel 2>/dev/null)" ]; then
+    echo "✗ kernel recipe missing at /root/kernel — aborting build" >&2
+    exit 1
+fi
 mkdir -p /usr/share/balos/kernel
-cp -r /root/kernel/* /usr/share/balos/kernel/ 2>/dev/null || true
+cp -r /root/kernel/. /usr/share/balos/kernel/
+# Stage the post-install side-effects that ship with linux-balkernel so
+# the running live ISO already benefits from the hardening sysctl and
+# udev I/O rules (without needing to rebuild the kernel first).
+install -Dm644 /root/kernel/balos-sysctl.conf /usr/lib/sysctl.d/99-balos-kernel.conf
+install -Dm644 /root/kernel/99-balos-io-scheduler.rules \
+    /usr/lib/udev/rules.d/99-balos-io-scheduler.rules
+install -Dm644 /root/kernel/balos-mkinitcpio.conf \
+    /usr/share/balos/mkinitcpio.conf.example
+install -Dm644 /root/kernel/balos-kernel-cmdline.conf \
+    /usr/lib/balos/kernel-cmdline.conf
+chmod 644 /usr/lib/sysctl.d/99-balos-kernel.conf \
+          /usr/lib/udev/rules.d/99-balos-io-scheduler.rules
 
 # ── Plymouth (boot splash) with BalOS theme ─────────────────────
 if command -v plymouth-set-default-theme &>/dev/null; then
