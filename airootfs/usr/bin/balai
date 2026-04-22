@@ -136,6 +136,77 @@ print(json.dumps(payload))
 PY
 }
 
+# Stream chat with multi-turn history. Reads prior turns from
+# $history_file (one JSON object per line: {"role":...,"content":...})
+# and appends BOTH the user's new prompt AND the assistant's full
+# response to the file, so subsequent calls see real context.
+#
+# $1 = user prompt
+# $2 = path to history file (will be created if absent; may grow unbounded
+#      in theory — the REPL caps it by truncating on /clear).
+stream_chat_with_history() {
+    local prompt="$1" hfile="$2"
+    [[ -n "$hfile" ]] || { stream_chat "$prompt"; return; }
+    mkdir -p "$(dirname "$hfile")" 2>/dev/null || true
+    touch "$hfile" 2>/dev/null || true
+    # Append the new user turn to the file BEFORE building payload so the
+    # model sees it on retry if we crash mid-stream.
+    python3 -c "
+import json, sys
+sys.stdout.write(json.dumps({'role':'user','content':sys.argv[1]})+'\n')
+" "$prompt" >> "$hfile" 2>/dev/null || true
+
+    local payload
+    payload=$(python3 - "$MODEL" "$(load_system_prompt)" "$hfile" << 'PY'
+import json, sys
+model, sysp, hfile = sys.argv[1:4]
+messages = [{"role": "system", "content": sysp}]
+with open(hfile) as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            messages.append(json.loads(line))
+        except Exception:
+            continue
+# Keep the system prompt + the last 16 turns — enough for coherent
+# follow-ups without blowing the 4096-token context window.
+if len(messages) > 17:
+    messages = [messages[0]] + messages[-16:]
+payload = {
+    "model": model, "stream": True, "keep_alive": "5m",
+    "messages": messages,
+    "options": {"temperature": 0.3, "top_p": 0.9,
+                "num_ctx": 4096, "num_predict": 512},
+}
+print(json.dumps(payload))
+PY
+)
+    local capture; capture=$(mktemp)
+    curl -fsS -N -H 'Content-Type: application/json' \
+         -d "$payload" "${OLLAMA_URL}/api/chat" 2>/dev/null \
+      | python3 -u -c '
+import sys, json
+for raw in sys.stdin:
+    raw = raw.strip()
+    if not raw: continue
+    try: d = json.loads(raw)
+    except Exception: continue
+    c = d.get("message", {}).get("content", "")
+    if c:
+        sys.stdout.write(c); sys.stdout.flush()
+' | tee "$capture"
+    echo ""
+    local full; full=$(cat "$capture"); rm -f "$capture"
+    # Append the assistant turn so the next call sees it.
+    python3 -c "
+import json, sys
+sys.stdout.write(json.dumps({'role':'assistant','content':sys.argv[1]})+'\n')
+" "$full" >> "$hfile" 2>/dev/null || true
+    echo "$full" > "$LAST_CMD_FILE" 2>/dev/null || true
+}
+
 # Stream a /api/chat response, print assistant text, capture full text.
 # Uses a SINGLE python subprocess as streaming parser (fast — no per-line fork).
 stream_chat() {
@@ -394,8 +465,18 @@ cmd_chat() {
     echo -e "${M}${B}╔════════════════════════════════════════════╗${N}"
     echo -e "${M}${B}║  BalAI · local · ${MODEL}            ${N}"
     echo -e "${M}${B}╚════════════════════════════════════════════╝${N}"
-    echo -e "${D}type 'exit' to quit, '/clear' to reset, '/model' to switch${N}"
+    echo -e "${D}type 'exit' to quit, '/clear' to reset context, '/save' to persist this session${N}"
     echo ""
+    # Per-REPL history file — conversation is multi-turn within one session.
+    # Starts fresh each REPL launch unless the user runs /save.
+    local session_dir="${XDG_STATE_HOME:-$HOME/.local/state}/balai/sessions"
+    local session
+    session="${session_dir}/repl-$(date +%Y%m%d-%H%M%S).jsonl"
+    mkdir -p "$session_dir" 2>/dev/null || true
+    # Hidden scratch file that gets wiped on /clear; only copied to the
+    # named session file on /save.
+    local scratch; scratch=$(mktemp)
+    trap 'rm -f "$scratch"' EXIT
     while true; do
         echo -ne "${G}${B}you ▸${N} "
         local q
@@ -403,14 +484,14 @@ cmd_chat() {
         [[ -z "$q" ]] && continue
         case "$q" in
             exit|quit|:q) break ;;
-            /clear) clear; continue ;;
-            /model) echo "current: $MODEL"; continue ;;
-            /help)  echo "Commands: /clear /model /help  |  exit"; continue ;;
+            /clear)       clear; : > "$scratch"; echo -e "${D}context cleared${N}"; continue ;;
+            /model)       echo "current: $MODEL"; continue ;;
+            /save)        cp "$scratch" "$session" 2>/dev/null && echo -e "${G}saved → $session${N}"; continue ;;
+            /help)        echo "Commands: /clear /model /save /help  |  exit"; continue ;;
         esac
         echo -ne "${C}${B}bal ▸${N} "
-        local p
-        p=$(with_ctx "$q")
-        stream_chat "$p"
+        local p; p=$(with_ctx "$q")
+        stream_chat_with_history "$p" "$scratch"
         echo ""
     done
 }
@@ -476,8 +557,40 @@ cmd_cmd() {
     ensure_ollama
     ensure_model
     local intent="$*"
+
+    # Auto man-page injection when the intent mentions a known command.
+    # Detect candidate commands: any whitespace-separated token that is
+    # (a) all-lowercase alnum-ish, (b) actually installed, (c) longer
+    # than 2 chars so we don't pull `ls` / `rm` for every query. Take
+    # the first match; don't try to pull 5 man pages.
+    local man_excerpt="" cand
+    for cand in $intent; do
+        cand=$(printf '%s' "$cand" | tr -d '`",./:;()<>|&$')
+        [[ ${#cand} -ge 3 ]] || continue
+        [[ "$cand" =~ ^[a-z][a-z0-9_-]+$ ]] || continue
+        # Skip obvious English words so "find all files" doesn't pull `all`.
+        case "$cand" in
+            all|the|and|for|this|that|with|from|into|some|any|every|new|old|file|files|folder|folders|command|terminal|shell|how|what|why|when|where|show|make|run|list|delete|remove|create|change|edit|open|close|start|stop|search|check|test|my|your|our|use|using) continue ;;
+        esac
+        if command -v "$cand" &>/dev/null && command -v man &>/dev/null; then
+            man_excerpt=$(MANWIDTH=100 man --no-hyphenation "$cand" 2>/dev/null | col -b | head -c 3000)
+            [[ -n "$man_excerpt" ]] && { info "injecting man(${cand}) for accuracy"; break; }
+        fi
+    done
+
     echo -e "${D}thinking…${N}"
-    stream_chat "Translate this intent into ONE shell command. Respond with exactly ONE fenced \`\`\`bash block containing the command, followed by at most ONE short line. Do not repeat the block. If the task needs a bal* wrapper, prefer it. Intent: ${intent}"
+    local base_prompt="Translate this intent into ONE shell command. Respond with exactly ONE fenced \`\`\`bash block containing the command, followed by at most ONE short line. Do not repeat the block. If the task needs a bal* wrapper, prefer it. Intent: ${intent}"
+    if [[ -n "$man_excerpt" ]]; then
+        stream_chat "Authoritative reference for flag accuracy (use it — don't guess):
+
+=== man excerpt ===
+${man_excerpt}
+=== end ===
+
+${base_prompt}"
+    else
+        stream_chat "$base_prompt"
+    fi
 
     local reply cmd
     reply=$(last_reply)
@@ -1007,6 +1120,47 @@ cmd_remember() {
     ok "remembered. (${NOTES_FILE})"
 }
 
+# Thumbs-up/down feedback. Thumbs-down with a reason appends a "Do NOT"
+# line to notes.md so the model sees it on every future turn and avoids
+# repeating the same bad advice. Thumbs-up writes to a separate log
+# (not injected) for auditing what the user liked.
+cmd_feedback() {
+    local verdict="${1:-}"; shift || true
+    local reason="$*"
+    case "$verdict" in
+        up|good|+1|👍)
+            mkdir -p "$(dirname "$NOTES_FILE")"
+            local log="${NOTES_FILE%.md}-likes.log"
+            local last; last=$(last_reply 2>/dev/null | head -c 200)
+            printf '%s  👍  %s\n' "$(date -Iseconds)" "${reason:-(no reason)}"   >> "$log"
+            [[ -n "$last" ]] && printf '   ↳ %s…\n' "$last"                     >> "$log"
+            ok "noted (${log})"
+            ;;
+        down|bad|-1|👎)
+            [[ -n "$reason" ]] || { echo "usage: balai thumbs down \"<what was wrong>\""; return 1; }
+            mkdir -p "$(dirname "$NOTES_FILE")"
+            # Capture context about the rejected reply so the user can
+            # audit later (full reply NOT injected — only the user's
+            # one-line critique goes into notes).
+            local rej_log="${NOTES_FILE%.md}-rejections.log"
+            {
+                printf '=== %s ===\n' "$(date -Iseconds)"
+                printf 'user said: %s\n' "$reason"
+                printf 'last reply:\n'
+                last_reply | sed 's/^/  /'
+                printf '\n'
+            } >> "$rej_log"
+            # Inject the correction as a negation the model will always see.
+            printf -- '- Do NOT: %s (user feedback, %s)\n' "$reason" "$(date +%Y-%m-%d)" >> "$NOTES_FILE"
+            ok "logged rejection and added avoidance note. BalAI won't repeat that."
+            ;;
+        *)
+            echo "usage: balai thumbs {up|down} \"<reason>\""
+            return 1
+            ;;
+    esac
+}
+
 cmd_forget() {
     if [[ ! -s "$NOTES_FILE" ]]; then
         echo "(nothing to forget — no notes yet)"; return 0
@@ -1371,6 +1525,7 @@ ${B}USAGE${N}
   balai perf                     ${D}# tokens-per-second benchmark${N}
   balai serve [addr]             ${D}# OpenAI-compat proxy (default 127.0.0.1:11435)${N}
   balai remember "<fact>"        ${D}# add a persistent note the AI will always see${N}
+  balai thumbs {up|down} "<r>"   ${D}# feedback; 'down' teaches the model to avoid that advice${N}
   balai memory                   ${D}# show remembered notes${N}
   balai forget [pattern]         ${D}# drop notes matching pattern (or all)${N}
   balai model [list|pull|rm]     ${D}# manage local models${N}
@@ -1411,6 +1566,7 @@ case "$CMD" in
     serve|proxy|api)      cmd_serve "$@" ;;
     perf|bench|benchmark) cmd_perf ;;
     remember|note)        cmd_remember "$@" ;;
+    thumbs|feedback)      cmd_feedback "$@" ;;
     forget)               cmd_forget "$@" ;;
     memory|notes|recall)  cmd_memory ;;
     setup|init)           cmd_setup ;;

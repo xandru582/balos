@@ -17,6 +17,7 @@ _balai() {
         'unit:explain a systemd unit'
         'perf:tokens-per-second benchmark'
         'serve:OpenAI-compatible proxy (for IDE plugins)'
+        'thumbs:give feedback (up/down) — down adds an avoidance note'
         'remember:add a persistent note the AI will always see'
         'memory:show remembered notes'
         'forget:drop notes matching pattern (or wipe all)'
@@ -55,7 +56,10 @@ _balai() {
                         _describe -t commands 'model subcommand' model_subs
                     fi
                     ;;
-                cmd|agent|fix|chat|ctx|doctor|tip|man|journal|unit|perf|serve|remember|memory|forget|setup|status) ;;
+                cmd|agent|fix|chat|ctx|doctor|tip|man|journal|unit|perf|serve|remember|memory|forget|thumbs|setup|status) ;;
+                thumbs|feedback)
+                    _values 'verdict' up down
+                    ;;
             esac
             ;;
     esac

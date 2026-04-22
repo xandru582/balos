@@ -218,6 +218,7 @@ The error is "The connection to the server localhost:8080 was refused." …
 | `balai unit <name>`    | Show + explain a systemd unit (security posture, misconfigs)      |
 | `balai perf`           | Tokens-per-second benchmark (3 runs)                              |
 | `balai serve [addr]`   | OpenAI-compatible proxy on `127.0.0.1:11435` for IDE plugins      |
+| `balai thumbs up/down "<r>"` | Feedback; `down` adds a permanent "Do NOT …" note         |
 | `balai fix [error]`    | Diagnose an error and suggest a fix                               |
 | `balai ctx`            | Dump the live system context balai would inject into your query   |
 | `balai doctor`         | Gather diagnostics (failed units, journal, disk, `.pacnew`) + AI summary |
@@ -349,6 +350,16 @@ BalAI is wired into every surface of the OS, not just its own CLI:
 - **Perf benchmark** — `balai perf` runs a fixed prompt 3 times and
   reports tokens/s (mean + best). Quick sanity check after kernel
   upgrades or GPU driver changes.
+- **Multi-turn REPL** — `balai chat` now keeps the whole turn history
+  within the session (capped at 16 turns). `/clear` resets it, `/save`
+  persists the transcript under `~/.local/state/balai/sessions/`.
+- **Feedback loop** — `balai thumbs down "suggested rm on the wrong
+  dir"` appends a `Do NOT: …` line to `notes.md`, which the model sees
+  on every future prompt. `thumbs up` logs what you liked separately
+  for auditing.
+- **Auto man-page injection in `balai cmd`** — when the intent
+  mentions an installed command, BalAI silently tails its man page
+  into the prompt so you get real flags, not hallucinated ones.
 
 ### Context awareness
 
