@@ -73,6 +73,47 @@ shown in
 .BR "balmonitor --once ")
 footer.
 .TP
+.BI "man " "<cmd>" " [" "question" "]"
+Inject the first 4 KB of
+.B man <cmd>
+into the prompt as authoritative context, then ask the model
+.I question
+(default: a 5-line cheat sheet). Prevents flag hallucination.
+.TP
+.BI "journal [" "--since '1h'" "] [" "--prio warning" "] [" "--lines 500" "] \"" "question" "\""
+Natural-language query over
+.BR journalctl (1)
+output. The model answers and proposes a concrete fix as a fenced
+bash block.
+.TP
+.BI "unit " "<unit>"
+Show
+.B systemctl cat <unit>
++
+.B systemctl status <unit>
+and produce a 4-bullet review (purpose, security posture,
+mis-configs, one inspection command).
+.TP
+.B perf
+Benchmark the active model — three runs × 128 tokens, reports
+mean and best tokens/s plus load and wall time.
+.TP
+.BI "serve " "[addr]"
+Expose an
+.B OpenAI-compatible
+proxy at
+.I addr
+(default 127.0.0.1:11435). Translates
+.B POST /v1/chat/completions
+to ollama's
+.B /api/chat
+with BalAI's system prompt + notes prepended. Supports streaming
+(SSE) and non-streaming. Also implements
+.BR "GET /v1/models " "and"
+.BR "GET /v1/health" "."
+Enable as a user service with
+.BR "systemctl --user enable --now balai-serve.service" .
+.TP
 .BI "remember \"" fact "\""
 Append a persistent note that is prepended to every future prompt.
 Stored at

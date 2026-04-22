@@ -1,0 +1,19 @@
+[Unit]
+Description=BalAI OpenAI-compatible proxy (127.0.0.1:11435)
+Documentation=man:balai(1)
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/balai serve 127.0.0.1:11435
+Restart=on-failure
+RestartSec=5
+# Light hardening — per-user service, still nice to lock down
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/state/balai
+
+[Install]
+WantedBy=default.target

@@ -213,6 +213,11 @@ The error is "The connection to the server localhost:8080 was refused." …
 | `balai agent "goal"`   | **Iterative approval loop** — propose → approve → run → observe, until `DONE` |
 | `balai explain <file>` | Explain a file, `--last` command, or piped stdin                  |
 | `balai explain --diff A B` | Semantic diff of two files — "what really changed"            |
+| `balai man <cmd> [q]`  | Inject a man page as authoritative context + optional question    |
+| `balai journal "<q>"`  | Natural-language `journalctl` query                              |
+| `balai unit <name>`    | Show + explain a systemd unit (security posture, misconfigs)      |
+| `balai perf`           | Tokens-per-second benchmark (3 runs)                              |
+| `balai serve [addr]`   | OpenAI-compatible proxy on `127.0.0.1:11435` for IDE plugins      |
 | `balai fix [error]`    | Diagnose an error and suggest a fix                               |
 | `balai ctx`            | Dump the live system context balai would inject into your query   |
 | `balai doctor`         | Gather diagnostics (failed units, journal, disk, `.pacnew`) + AI summary |
@@ -318,6 +323,32 @@ BalAI is wired into every surface of the OS, not just its own CLI:
 - **Persistent memory** — `balai remember "I use btrfs and nvim"`. Notes live
   at `$XDG_STATE_HOME/balai/notes.md` and get prepended to every prompt.
   Wipe all: `balai forget`. Wipe one: `balai forget btrfs`.
+- **Waybar / Hyprland** — `custom/balai` module polls `balai tip` every
+  15 min; icon class drives color (ok/warn/bad/off). Click opens the
+  GUI, right-click runs the doctor.
+- **KRunner** (`Alt+Space`) — type `? your question` or `ai: …` and
+  press Enter to open the GUI with the answer already streaming.
+- **OpenAI-compatible proxy** — `balai serve` (or `systemctl --user
+  enable --now balai-serve.service`) exposes `/v1/chat/completions` on
+  `127.0.0.1:11435` with BalAI's system prompt and your notes
+  pre-applied. Any OpenAI-speaking IDE plugin (Continue, Aider,
+  Cursor-alts) can consume it — just point them at the URL.
+- **Battery guard** — `balai` refuses to run below 10 % on battery
+  (override with `BALAI_FORCE=1`) and warns below 20 %. Cold-start +
+  eval of Qwen2.5-1.5B pulls noticeable wattage; this is conscious
+  spending.
+- **Knowledge injection** — `balai man find "delete files older than 7
+  days"` feeds the first 4 KB of `man find` into the prompt, so the
+  model quotes real flags instead of hallucinating. Works for any
+  installed man page.
+- **Journal NL query** — `balai journal "what went wrong last boot"`
+  tails `journalctl` (priority ≥ warning, since = 1h) and asks the
+  model for an operator summary, ending in a concrete command.
+- **Unit explainer** — `balai unit sshd` dumps `systemctl cat` + status
+  and asks for a 4-bullet security/misconfig review.
+- **Perf benchmark** — `balai perf` runs a fixed prompt 3 times and
+  reports tokens/s (mean + best). Quick sanity check after kernel
+  upgrades or GPU driver changes.
 
 ### Context awareness
 

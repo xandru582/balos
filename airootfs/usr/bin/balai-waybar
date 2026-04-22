@@ -1,0 +1,93 @@
+#!/usr/bin/env python3
+# balai-waybar — tiny JSON producer for waybar's custom module.
+#
+# Writes one line in waybar's JSON schema. Called every 15 min by the
+# waybar config (custom/balai). Stays cheap: if ollama isn't running,
+# we render a passive "offline" badge and skip the model call.
+#
+# Output schema:
+#   {
+#     "text":      "🧠 tip...",       # shown in the bar (truncated)
+#     "tooltip":   "full tip + meta",  # rich tooltip on hover
+#     "alt":       "ok|warn|bad|off",  # drives per-state CSS if user wants
+#     "class":     "ok",
+#     "percentage": 0
+#   }
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+
+MAX_TEXT = 46   # keep the bar compact
+TIMEOUT  = 14   # seconds — ollama cold start can be ~4 s + eval
+
+
+def _say(text: str, tooltip: str, klass: str) -> None:
+    payload = {
+        "text":    text,
+        "tooltip": tooltip,
+        "alt":     klass,
+        "class":   klass,
+    }
+    print(json.dumps(payload, ensure_ascii=False))
+    sys.exit(0)
+
+
+def _ollama_up() -> bool:
+    host = os.environ.get("OLLAMA_HOST", "127.0.0.1:11434")
+    try:
+        import urllib.request
+        urllib.request.urlopen(f"http://{host}/api/tags", timeout=1.0)
+        return True
+    except Exception:
+        return False
+
+
+def main() -> int:
+    if not shutil.which("balai"):
+        _say("", "BalAI not installed", "off")
+
+    if not _ollama_up():
+        # Cheap passive badge — clicking still opens the GUI, so this is
+        # just visual. Keeps the bar idle while the daemon is down.
+        _say("🧠 off", "ollama not running — click to launch BalAI", "off")
+
+    try:
+        proc = subprocess.run(
+            ["balai", "tip"],
+            capture_output=True, text=True, timeout=TIMEOUT,
+            env={**os.environ, "BALAI_CTX_MODE": "always"},
+        )
+    except subprocess.TimeoutExpired:
+        _say("🧠 busy", "BalAI is busy — try again", "warn")
+    except Exception as e:
+        _say("🧠 err", f"BalAI error: {e}", "bad")
+
+    tip = (proc.stdout or "").strip().splitlines()
+    tip = tip[0].strip() if tip else ""
+    if not tip:
+        _say("🧠 ok", "BalAI: no suggestions right now", "ok")
+
+    # Classify: the model replies "→ all green" when everything is fine.
+    klass = "ok"
+    low   = tip.lower()
+    if any(k in low for k in ("consider", "low", "warn", "warning", "switch", "high", "could")):
+        klass = "warn"
+    if any(k in low for k in ("critical", "bad", "overheat", "fail", "error", "fortress")):
+        klass = "bad"
+    if "all green" in low:
+        klass = "ok"
+
+    display = tip.lstrip("→ ").strip()
+    if len(display) > MAX_TEXT:
+        display = display[: MAX_TEXT - 1] + "…"
+    _say(f"🧠 {display}", tip, klass)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

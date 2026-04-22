@@ -114,3 +114,21 @@ tooltip {
 @keyframes blink {
     50% { opacity: 0.3; }
 }
+
+/* ── BalAI waybar module ─────────────────────────────────────── */
+#custom-balai {
+    background: #1c1c24;
+    color: #e7e7ea;
+    border-radius: 6px;
+    padding: 0 10px;
+    margin: 0 4px;
+    border: 1px solid #2e2e38;
+}
+#custom-balai:hover {
+    border-color: #a855f7;
+    background: #241a33;
+}
+#custom-balai.ok   { color: #22c55e; }
+#custom-balai.warn { color: #f59e0b; }
+#custom-balai.bad  { color: #ef4444; animation: blink 1.4s linear infinite; }
+#custom-balai.off  { color: #8a8a94; opacity: 0.7; }

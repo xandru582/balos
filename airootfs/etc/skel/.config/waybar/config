@@ -4,7 +4,7 @@
     "height": 28,
     "spacing": 4,
 
-    "modules-left": ["custom/balos", "hyprland/workspaces", "tray"],
+    "modules-left": ["custom/balos", "custom/balai", "hyprland/workspaces", "tray"],
     "modules-center": ["clock"],
     "modules-right": [
         "custom/mode",
@@ -134,5 +134,15 @@
         "tooltip": false,
         "on-click": "loginctl poweroff",
         "on-click-right": "loginctl reboot"
+    },
+
+    "custom/balai": {
+        "format": "{}",
+        "exec": "/usr/bin/balai-waybar",
+        "return-type": "json",
+        "interval": 900,
+        "on-click": "balai-chat",
+        "on-click-right": "kitty --class=balai-chat --hold -- balai doctor",
+        "tooltip": true
     }
 }
