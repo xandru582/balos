@@ -16,10 +16,8 @@ import json
 import os
 import re
 import shutil
-import socket
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 try:
@@ -28,16 +26,16 @@ except Exception:  # pragma: no cover — on BalOS this is a hard dep
     requests = None
 
 from PySide6.QtCore import (
-    Qt, QTimer, QThread, Signal, Slot, QSize,
+    Qt, QTimer, QThread, Signal, Slot,
 )
 from PySide6.QtGui import (
-    QAction, QFont, QFontDatabase, QIcon, QKeySequence, QPalette, QColor,
+    QIcon, QKeySequence, QPalette, QColor,
     QTextCursor, QShortcut,
 )
 from PySide6.QtWidgets import (
     QApplication, QHBoxLayout, QVBoxLayout, QWidget, QPushButton, QLabel,
-    QTextEdit, QPlainTextEdit, QSizePolicy, QFrame, QScrollArea, QMainWindow,
-    QInputDialog, QMessageBox, QMenu, QStatusBar, QSplitter,
+    QTextEdit, QPlainTextEdit, QFrame, QMainWindow,
+    QInputDialog, QStatusBar,
 )
 
 # ─── theme ──────────────────────────────────────────────────────────
@@ -170,8 +168,10 @@ def _uptime() -> str:
         d, rem = divmod(int(secs), 86400)
         h, rem = divmod(rem, 3600)
         m, _   = divmod(rem, 60)
-        if d:  return f"{d}d {h}h {m}m"
-        if h:  return f"{h}h {m}m"
+        if d:
+            return f"{d}d {h}h {m}m"
+        if h:
+            return f"{h}h {m}m"
         return f"{m}m"
     except OSError:
         return "?"
@@ -252,7 +252,7 @@ class AIThread(QThread):
 
     def run(self):
         try:
-            import requests  # noqa: redefine for thread-local import safety
+            import requests  # noqa: F811 — thread-local import re-binding
         except ImportError:
             self.error.emit("python-requests is not installed")
             return
@@ -469,10 +469,46 @@ class Sidebar(QFrame):
         help_lbl.setStyleSheet(f"color: {MUTED}; padding: 8px 16px; font-size: 10px;")
         root.addWidget(help_lbl)
 
-        # Poll loop
+        # Slow poll for values that can't be watched (CPU load, battery%).
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.refresh)
         self._timer.start(5000)
+
+        # Fast path: inotify on /run/balos/* so mode changes (bal boost /
+        # bal saver / bal shield <tier>) reflect in the UI within ~50 ms
+        # instead of up to 5 s.
+        from PySide6.QtCore import QFileSystemWatcher
+        self._watcher = QFileSystemWatcher(self)
+        # QFileSystemWatcher watches *existing* files. Make sure the dir
+        # exists and then watch files individually (we don't own them).
+        run_dir = "/run/balos"
+        if os.path.isdir(run_dir):
+            self._watcher.addPath(run_dir)
+            for name in ("power-profile", "shield-tier"):
+                p = f"{run_dir}/{name}"
+                if os.path.isfile(p):
+                    self._watcher.addPath(p)
+        self._watcher.fileChanged.connect(self._on_state_file_changed)
+        self._watcher.directoryChanged.connect(self._on_state_dir_changed)
+
+        self.refresh()
+
+    @Slot(str)
+    def _on_state_file_changed(self, path: str):
+        # Re-add: many editors (and `echo >`) replace the file rather than
+        # modifying it in place, which causes QFileSystemWatcher to drop the
+        # watch. Add it back on every event.
+        if os.path.isfile(path) and path not in self._watcher.files():
+            self._watcher.addPath(path)
+        self.refresh()
+
+    @Slot(str)
+    def _on_state_dir_changed(self, _path: str):
+        # A new file may have appeared in /run/balos — pick it up.
+        for name in ("power-profile", "shield-tier"):
+            p = f"/run/balos/{name}"
+            if os.path.isfile(p) and p not in self._watcher.files():
+                self._watcher.addPath(p)
         self.refresh()
 
     def _section(self, layout: QVBoxLayout, title: str):

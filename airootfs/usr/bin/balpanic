@@ -73,6 +73,22 @@ do_soft() {
     done
     step "shell histories wiped"
 
+    # 3b. BalAI chat history + remembered notes (was a privacy leak in earlier
+    # releases — these survived soft/hard panics). Honour both XDG_STATE_HOME
+    # and the fallback path used when it's unset.
+    for user_home in /root /home/*; do
+        [[ -d "$user_home" ]] || continue
+        for ai_dir in "$user_home/.local/state/balai" "$user_home/.cache/balai"; do
+            [[ -d "$ai_dir" ]] || continue
+            : > "$ai_dir/history.jsonl"  2>/dev/null || true
+            : > "$ai_dir/notes.md"       2>/dev/null || true
+            rm -f "$ai_dir/last-suggested" 2>/dev/null || true
+        done
+    done
+    # balai also writes a last-suggested cmd under /run (ephemeral, still cleanse)
+    rm -f /run/user/*/balai-last-suggested 2>/dev/null || true
+    step "BalAI chat history + notes wiped"
+
     # 4. Recent files
     for base in /root /home/*; do
         [[ -d "$base" ]] || continue

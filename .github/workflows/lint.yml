@@ -39,3 +39,45 @@ jobs:
           if [[ -n "$dups" ]]; then
             echo "Duplicate packages:"; echo "$dups"; exit 1
           fi
+
+  python-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install ruff
+        run: pip install ruff==0.6.9
+      - name: Lint Python scripts
+        run: |
+          set -e
+          # Collect every Python script we ship (shebang-based detection so we
+          # don't have to remember .py extensions that aren't used for CLIs).
+          mapfile -t pyfiles < <(grep -lE '^#!.*python' airootfs/usr/bin/* 2>/dev/null || true)
+          # Also include helper modules if any .py exist under airootfs.
+          while IFS= read -r f; do pyfiles+=("$f"); done < <(find airootfs -name '*.py' 2>/dev/null)
+          if [[ ${#pyfiles[@]} -eq 0 ]]; then
+            echo "no python files to lint"; exit 0
+          fi
+          echo "linting: ${pyfiles[*]}"
+          # Rules: E (pycodestyle errors), F (pyflakes), W (warnings), B (bugbear)
+          # Ignore: E501 (line length — we have long status bar strings),
+          #         E402 (module imports not at top — QApplication guard),
+          #         E722 (bare except — intentional in safety layers).
+          ruff check --select E,F,W,B --ignore E501,E402,E722,B007,B008 "${pyfiles[@]}"
+
+  python-syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile-check Python scripts
+        run: |
+          set -e
+          mapfile -t pyfiles < <(grep -lE '^#!.*python' airootfs/usr/bin/* 2>/dev/null || true)
+          while IFS= read -r f; do pyfiles+=("$f"); done < <(find airootfs -name '*.py' 2>/dev/null)
+          [[ ${#pyfiles[@]} -eq 0 ]] && { echo "no python files"; exit 0; }
+          python -m py_compile "${pyfiles[@]}"

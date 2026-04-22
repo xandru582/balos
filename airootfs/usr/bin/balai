@@ -427,10 +427,62 @@ cmd_cmd() {
     echo -e "${C}$cmd${N}"
     echo ""
 
-    # Safety block — widened after audit. Refuses to auto-run anything
-    # that matches any of these DESTRUCTIVE patterns:
-    local danger_re='(^|[[:space:];&|`(])(rm[[:space:]]+-[a-zA-Z]*r[a-zA-Z]*[fF][a-zA-Z]*[[:space:]]+/([[:space:]]|$)|dd[[:space:]].*of=/dev/(sd|nvme|hd|mmc)|mkfs\.[a-z0-9]+[[:space:]]+/dev/|wipefs[[:space:]]|shred[[:space:]].*[[:space:]]/dev/|>[[:space:]]*/dev/(sd|nvme|hd)|cryptsetup[[:space:]]+(erase|luksRemoveKey)|fdisk[[:space:]]+/dev/|parted[[:space:]]+/dev/|blkdiscard[[:space:]]|chmod[[:space:]]+-R[[:space:]]+.*[[:space:]]/([[:space:]]|$)|chown[[:space:]]+-R[[:space:]]+.*[[:space:]]/([[:space:]]|$)|:\(\)\{)'
-    if echo "$cmd" | grep -qE "$danger_re"; then
+    # ── Safety block: refuse to auto-run obviously destructive commands.
+    # Rule of thumb: we'd rather false-positive and make the user copy-paste
+    # than false-negative once and eat their disk.
+    #
+    # Categories covered:
+    #   1. Filesystem wipes: rm -rf on / or any top-level system dir
+    #   2. Block-device writes: dd/mkfs/wipefs/shred/blkdiscard + /dev/*
+    #   3. Partition tooling: fdisk/parted/sfdisk/sgdisk on /dev/*
+    #   4. LUKS destruction: cryptsetup erase / luksKillSlot / luksRemoveKey
+    #   5. Recursive chmod/chown rooted at / or system dirs
+    #   6. Remote code execution: curl|wget piped into sh/bash/zsh/python…
+    #   7. Fork bombs: `:(){...}`
+    #   8. Privilege blast-radius: chmod 777 /, setenforce 0
+    #   9. Mass kill of critical processes
+    #
+    # Each pattern is a plain ERE alternative. No empty alternatives
+    # (GNU/BSD grep both reject them). Top-level system dirs list is kept
+    # in one var so it's easy to audit.
+    local sysdirs='(home|etc|var|usr|bin|sbin|boot|lib|lib32|lib64|opt|root|srv|tmp|dev|proc|sys)'
+    local danger_alts=(
+        # 1a. rm -rf /   (literal root, end-of-string / space / pipe)
+        "rm[[:space:]]+-[a-zA-Z]*[rR][a-zA-Z]*[fF][a-zA-Z]*[[:space:]]+(--[[:space:]]+)?/([[:space:];&|]|\$)"
+        "rm[[:space:]]+-[a-zA-Z]*[fF][a-zA-Z]*[rR][a-zA-Z]*[[:space:]]+(--[[:space:]]+)?/([[:space:];&|]|\$)"
+        # 1b. rm -rf /<sysdir>[...]
+        "rm[[:space:]]+-[a-zA-Z]*[rR][a-zA-Z]*[fF][a-zA-Z]*[[:space:]]+(--[[:space:]]+)?/${sysdirs}([[:space:];&|/]|\$)"
+        "rm[[:space:]]+-[a-zA-Z]*[fF][a-zA-Z]*[rR][a-zA-Z]*[[:space:]]+(--[[:space:]]+)?/${sysdirs}([[:space:];&|/]|\$)"
+        # 2. block-device writes
+        "dd[[:space:]].*of=/dev/(sd|nvme|hd|mmc|vd|loop)"
+        "mkfs\.[a-z0-9]+[[:space:]]+/dev/"
+        "wipefs[[:space:]]+(-[afFq]+[[:space:]]+)?/dev/"
+        "shred[[:space:]].*[[:space:]]/dev/"
+        ">[[:space:]]*/dev/(sd|nvme|hd|mmc|vd)"
+        "blkdiscard[[:space:]]+/dev/"
+        # 3. partition tooling
+        "(s?fdisk|sgdisk|parted)[[:space:]]+(--[[:alpha:]-]+[[:space:]]+)?/dev/"
+        # 4. LUKS destruction
+        "cryptsetup[[:space:]]+(erase|luksRemoveKey|luksKillSlot|luksErase)"
+        # 5. recursive chmod/chown rooted at / or sysdirs
+        "chmod[[:space:]]+-[a-zA-Z]*R[a-zA-Z]*[[:space:]]+[0-9]+[[:space:]]+/([[:space:];&|]|\$)"
+        "chmod[[:space:]]+-[a-zA-Z]*R[a-zA-Z]*[[:space:]]+[0-9]+[[:space:]]+/${sysdirs}([[:space:];&|/]|\$)"
+        "chown[[:space:]]+-[a-zA-Z]*R[a-zA-Z]*[[:space:]]+[^[:space:]]+[[:space:]]+/([[:space:];&|]|\$)"
+        "chown[[:space:]]+-[a-zA-Z]*R[a-zA-Z]*[[:space:]]+[^[:space:]]+[[:space:]]+/${sysdirs}([[:space:];&|/]|\$)"
+        # 6. remote-code-execution via pipe to interpreter
+        "(curl|wget|fetch)[[:space:]][^|]*\\|[[:space:]]*(sudo[[:space:]]+)?(sh|bash|zsh|dash|ksh|fish|python[23]?|perl|ruby|node)([[:space:];&|]|\$)"
+        # 7. fork bomb
+        ":[[:space:]]*\\([[:space:]]*\\)[[:space:]]*\\{"
+        # 8. privilege blast-radius
+        "chmod[[:space:]]+(-[a-zA-Z]+[[:space:]]+)?0?777[[:space:]]+/([[:space:];&|]|\$)"
+        "setenforce[[:space:]]+0"
+        # 9. mass kill of critical processes
+        "(killall|pkill)([[:space:]]+-[a-zA-Z0-9]+)*[[:space:]]+(systemd|init|sshd|NetworkManager|dbus|polkitd)"
+    )
+    # Anchor once at the front of the combined regex.
+    local anchor='(^|[[:space:];&|`(])'
+    local danger_re="${anchor}($(IFS='|'; echo "${danger_alts[*]}"))"
+    if printf '%s' "$cmd" | grep -qE "$danger_re"; then
         warn "this looks DESTRUCTIVE — review manually; not offering to run it."
         if need wl-copy; then
             printf '%s' "$cmd" | wl-copy 2>/dev/null && info "copied to clipboard so you can inspect it"
