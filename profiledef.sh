@@ -46,6 +46,7 @@ file_permissions=(
     ["/usr/bin/balupdate"]="0:0:755"
     ["/usr/bin/balvault"]="0:0:755"
     ["/usr/bin/balwatch"]="0:0:755"
+    ["/usr/bin/balai"]="0:0:755"
     ["/etc/skel/.zshrc"]="0:0:644"
     ["/etc/skel/.config"]="0:0:755"
 )

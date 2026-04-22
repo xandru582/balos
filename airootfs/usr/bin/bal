@@ -47,6 +47,10 @@ ${B}SYSTEM${N}
   ${C}init${N}               First-boot wizard
   ${C}kernel${N} ${D}build${N}        Compile custom BalKernel (~45 min)
 
+${B}AI ASSISTANT${N} ${D}(100% offline)${N}
+  ${C}ai${N} ${D}[question]${N}     Local LLM assistant (qwen2.5:0.5b)
+  ${C}?${N}  ${D}<question>${N}     Shortcut for: bal ai "<question>"
+
 ${B}EXAMPLES${N}
   ${D}bal${N}                             ${D}# pick from menu${N}
   ${D}bal boost${N}                       ${D}# gaming mode${N}
@@ -54,6 +58,8 @@ ${B}EXAMPLES${N}
   ${D}bal shield fortress${N}             ${D}# VPN kill-switch${N}
   ${D}bal panic hard${N}                  ${D}# deeper sanitize${N}
   ${D}bal pwn listen 4444${N}             ${D}# reverse shell listener${N}
+  ${D}bal ? "how do I enable stealth"${N}  ${D}# ask the local AI${N}
+  ${D}bal ai cmd "scan my lan"${N}         ${D}# AI generates + runs command${N}
 
 EOF
 }
@@ -97,6 +103,7 @@ interactive_menu() {
 ♻  update        · Snapshot-backed system update
 ⚙  init          · Run first-boot wizard
 🔧 kernel-build  · Compile BalKernel (~45 min)
+🤖 ai            · Local LLM assistant (offline qwen2.5:0.5b)
 MENU
     )
 
@@ -127,6 +134,7 @@ MENU
         ♻)             exec balupdate ;;
         ⚙)             exec balinit ;;
         🔧)           exec balkernel-build ;;
+        🤖)           exec balai ;;
         *)            exit 0 ;;
     esac
 }
@@ -158,6 +166,8 @@ case "$CMD" in
     update|upgrade)          exec balupdate "$@" ;;
     init|setup)              exec balinit "$@" ;;
     kernel)                  exec balkernel-build "$@" ;;
+    ai|assistant|llm)        exec balai "$@" ;;
+    \?|ask)                  exec balai "$@" ;;
     version|-v|--version)    echo "BalOS v${VERSION}" ;;
     help|-h|--help)          usage ;;
     *)                       echo "Unknown command: $CMD"; echo ""; usage; exit 1 ;;

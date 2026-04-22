@@ -65,6 +65,7 @@ systemctl enable earlyoom           2>/dev/null || true
 systemctl enable fail2ban           2>/dev/null || true
 systemctl enable apparmor           2>/dev/null || true
 systemctl enable systemd-zram-setup@zram0.service 2>/dev/null || true
+systemctl enable ollama                            2>/dev/null || true
 
 # Mask things we don't want
 systemctl mask systemd-networkd-wait-online.service 2>/dev/null || true
@@ -72,6 +73,36 @@ systemctl mask NetworkManager-wait-online.service   2>/dev/null || true
 
 # ── Make BalOS tools executable ─────────────────────────────────
 chmod +x /usr/bin/bal* 2>/dev/null || true
+
+# ── Pre-bake small LLM for balai (offline AI assistant) ─────────
+# We pull qwen2.5:0.5b (~400 MB Q4) while the chroot still has network.
+# After this, `balai` works 100% offline. Non-fatal if pull fails —
+# user can run `balai setup` after first boot with internet.
+if command -v ollama &>/dev/null; then
+    echo "[balai] pulling model into squashfs (this takes a few minutes)…"
+    export OLLAMA_MODELS=/var/lib/ollama/models
+    mkdir -p "$OLLAMA_MODELS"
+    # Start ollama in background inside chroot
+    ollama serve >/tmp/ollama-build.log 2>&1 &
+    OLLAMA_PID=$!
+    # Wait for it to respond (up to 20 s)
+    for i in {1..40}; do
+        curl -fsS --max-time 1 http://127.0.0.1:11434/api/tags &>/dev/null && break
+        sleep 0.5
+    done
+    if curl -fsS --max-time 2 http://127.0.0.1:11434/api/tags &>/dev/null; then
+        ollama pull qwen2.5:0.5b-instruct-q4_K_M 2>&1 | tail -5 || \
+            echo "[balai] model pull failed — user can run 'balai setup' later"
+    else
+        echo "[balai] ollama serve didn't come up in chroot — skipping pre-bake"
+    fi
+    kill "$OLLAMA_PID" 2>/dev/null || true
+    wait "$OLLAMA_PID" 2>/dev/null || true
+    # Fix ownership (ollama user gets created by its package)
+    if id ollama &>/dev/null; then
+        chown -R ollama:ollama /var/lib/ollama 2>/dev/null || true
+    fi
+fi
 
 # ── Wordlists: stable symlink so balhack / balrecon hints resolve ──
 # seclists ships rockyou under /usr/share/seclists/Passwords/Leaked-Databases/.

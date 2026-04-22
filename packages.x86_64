@@ -609,3 +609,8 @@ dunst
 
 # Fonts / emoji (for waybar nerd font)
 otf-font-awesome
+
+# ── Local AI assistant (balai) ──────────────────────────────────
+# Ollama runs a local HTTP daemon; qwen2.5:0.5b model (~400MB) is pulled
+# during build so `balai` works fully offline after first boot.
+ollama
