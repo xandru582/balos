@@ -222,22 +222,29 @@ gather_ctx() {
     local out=""
     local line
 
-    # Power profile (bal's doing)
-    if [[ -r /var/lib/balos/power-profile ]]; then
-        line=$(cat /var/lib/balos/power-profile 2>/dev/null)
-        [[ -n "$line" ]] && out+="power-profile: $line"$'\n'
-    fi
+    # Power profile — written by balboost / balsaver. Legacy fallback to
+    # /run/balos-mode (the old pre-unified path).
+    for pf in /run/balos/power-profile /run/balos-mode /tmp/balos-mode; do
+        if [[ -r "$pf" ]]; then
+            line=$(cat "$pf" 2>/dev/null)
+            [[ -n "$line" ]] && { out+="power-profile: $line"$'\n'; break; }
+        fi
+    done
 
-    # Firewall tier
-    if [[ -r /var/lib/balos/shield-tier ]]; then
-        line=$(cat /var/lib/balos/shield-tier 2>/dev/null)
+    # Firewall tier — written by balshield
+    if [[ -r /run/balos/shield-tier ]]; then
+        line=$(cat /run/balos/shield-tier 2>/dev/null)
         [[ -n "$line" ]] && out+="firewall: $line"$'\n'
     elif need nft; then
         # Cheap probe: is nftables loaded at all?
         sudo -n nft list ruleset 2>/dev/null | grep -q 'chain input' && out+="firewall: nftables loaded"$'\n'
     fi
 
-    # Stealth
+    # Stealth — written by balstealth
+    if [[ -r /run/balos/stealth ]]; then
+        line=$(cat /run/balos/stealth 2>/dev/null)
+        [[ "$line" == "on" ]] && out+="stealth: on"$'\n'
+    fi
     if systemctl is-active tor &>/dev/null; then
         out+="tor: active"$'\n'
     fi
@@ -493,6 +500,64 @@ cmd_fix() {
     stream_chat "I got this error. Diagnose and give a concrete fix as a command. Be terse.\n\n${err}"
 }
 
+# Health check: collect signals from the local system (failed services,
+# high RAM, high load, pending updates, .pacnew files, broken VPN, etc),
+# then ask the model to summarise and suggest next steps. Pure read-only.
+cmd_doctor() {
+    ensure_ollama
+    ensure_model
+    info "gathering diagnostics (read-only, ~5 s)…"
+
+    local tmpf
+    tmpf=$(mktemp)
+    {
+        echo "### Host: $(hostname) — $(date -Is 2>/dev/null)"
+        echo ""
+        echo "### Context (balai view)"
+        gather_ctx 2>/dev/null
+        echo ""
+        echo "### Failed systemd units"
+        systemctl --failed --no-legend 2>/dev/null | head -20 || echo "(systemctl unavailable)"
+        echo ""
+        echo "### Services of interest"
+        for svc in NetworkManager sddm tlp nftables dnscrypt-proxy tor ollama suricata wg-quick@wg0 ufw firewalld; do
+            state=$(systemctl is-active "$svc" 2>/dev/null || true)
+            enabled=$(systemctl is-enabled "$svc" 2>/dev/null || true)
+            [[ -n "$state" || -n "$enabled" ]] && printf '  %-22s active=%-10s enabled=%s\n' "$svc" "${state:-n/a}" "${enabled:-n/a}"
+        done
+        echo ""
+        echo "### Recent journal errors (last 20)"
+        journalctl -p err -n 20 --no-pager 2>/dev/null | tail -20 || echo "(journalctl unavailable)"
+        echo ""
+        echo "### Disk pressure"
+        df -h / /boot /var /home 2>/dev/null | grep -vE '^(tmpfs|devtmpfs|efivarfs)' | head -10
+        echo ""
+        echo "### Memory + swap"
+        free -h 2>/dev/null | head -4
+        echo ""
+        echo "### .pacnew files (need manual merge)"
+        find /etc -name '*.pacnew' 2>/dev/null | head -10
+        echo ""
+        echo "### Pacman last transaction"
+        tail -40 /var/log/pacman.log 2>/dev/null | tail -20
+        echo ""
+        echo "### Kernel ring-buffer tail"
+        dmesg --ctime 2>/dev/null | tail -15 || tail -15 /var/log/dmesg 2>/dev/null
+    } > "$tmpf"
+
+    # Show raw diagnostics first (condensed)
+    echo -e "${D}─── raw diagnostics (for reference) ────────────────${N}" >&2
+    head -80 "$tmpf" >&2
+    echo -e "${D}────────────────────────────────────────────────────${N}" >&2
+    echo ""
+    echo -e "${M}${B}AI summary:${N}"
+    stream_chat "You are running as a system doctor. Read the diagnostics below and produce: (1) ONE line overall verdict (healthy / minor issues / attention needed), (2) up to 3 concrete issues as bullet points with the exact bal* or systemctl command to fix each. Be terse. Do NOT emit more than one fenced block per issue.
+
+DIAGNOSTICS:
+$(cat "$tmpf")"
+    rm -f "$tmpf"
+}
+
 cmd_setup() {
     info "checking ollama service…"
     if ! need ollama; then
@@ -566,6 +631,7 @@ ${B}USAGE${N}
   balai explain <file|--last>    ${D}# explain file or last command${N}
   balai fix  [error text]        ${D}# diagnose + suggest fix${N}
   balai ctx                      ${D}# show system context balai sees${N}
+  balai doctor                   ${D}# diagnose system + AI summary${N}
   balai model [list|pull|rm]     ${D}# manage local models${N}
   balai status                   ${D}# service + model health${N}
   balai setup                    ${D}# first-run: enable service + pull model${N}
@@ -595,6 +661,7 @@ case "$CMD" in
     explain|exp|why)      cmd_explain "$@" ;;
     fix|err|error)        cmd_fix "$@" ;;
     ctx|context)          cmd_ctx ;;
+    doctor|diag|diagnose) cmd_doctor ;;
     setup|init)           cmd_setup ;;
     status|health)        cmd_status ;;
     model|models)         cmd_model "$@" ;;

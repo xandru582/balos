@@ -118,6 +118,9 @@ USER_NAME="$(logname 2>/dev/null || echo "")"
 systemctl start irqbalance 2>/dev/null
 
 echo "saver-${MODE}" > /run/balos-mode 2>/dev/null || echo "saver-${MODE}" > /tmp/balos-mode
+# Unified state path — consumed by balai ctx and balmonitor.
+mkdir -p /run/balos 2>/dev/null
+echo "saver:${MODE}" > /run/balos/power-profile 2>/dev/null || true
 
 EST="+40%"
 [[ "$MODE" == "extreme" ]] && EST="+80-100% (potentially 2x)"

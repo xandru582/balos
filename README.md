@@ -213,6 +213,7 @@ The error is "The connection to the server localhost:8080 was refused." …
 | `balai explain <file>` | Explain a file, `--last` command, or piped stdin                  |
 | `balai fix [error]`    | Diagnose an error and suggest a fix                               |
 | `balai ctx`            | Dump the live system context balai would inject into your query   |
+| `balai doctor`         | Gather diagnostics (failed units, journal, disk, `.pacnew`) + AI summary |
 | `balai model list`     | Show locally installed models and sizes                           |
 | `balai model pull X`   | Download another Qwen/Llama/Phi model (needs network)             |
 | `balai status`         | Service health, active model, RAM                                 |
@@ -250,6 +251,9 @@ BalAI is wired into every surface of the OS, not just its own CLI:
 - **pacman** — optional post-transaction operator summary
   (off by default; enable with `sudo touch /etc/balos/pacman-ai-summary.on`)
 - **`balinit`** — first-boot wizard warms the model so first real query is snappy
+- **Zsh completions** — `bal ai <TAB>`, `balai <TAB>`, `bal shield <TAB>`, etc.
+- **Unified state** — `bal boost|saver|shield|…` publish to `/run/balos/*`, which
+  `balai ctx` reads so the model always sees the *current* system, not guesses.
 
 ### Context awareness
 

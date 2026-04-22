@@ -91,21 +91,31 @@ show_status() {
     echo -e "  Public IP: ${C}$(curl -s --max-time 3 ifconfig.me 2>/dev/null || echo unknown)${N}"
 }
 
+# Record the chosen tier for other bal* tools (balai ctx, balmonitor).
+persist_tier() {
+    mkdir -p /run/balos
+    printf '%s\n' "$1" > /run/balos/shield-tier 2>/dev/null || true
+}
+
 case "$LEVEL" in
     off|disable)
         flush
+        persist_tier off
         echo -e "${Y}  ⚠ Firewall DISABLED${N}"
         ;;
     normal|default)
         apply_normal
+        persist_tier normal
         echo -e "${G}  ✓ Normal firewall active${N}"
         ;;
     armor|strict)
         apply_armor
+        persist_tier armor
         echo -e "${G}  ✓ ARMOR mode — blocking inbound, rate-limiting outbound${N}"
         ;;
     fortress|killswitch|paranoid)
         apply_fortress
+        persist_tier fortress
         echo -e "${R}${B}  ⚠ FORTRESS MODE — all traffic must flow through VPN${N}"
         ;;
     status|show|*)

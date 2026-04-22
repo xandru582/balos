@@ -26,6 +26,8 @@ _bal() {
         'update:Snapshot-backed update'
         'init:First-boot wizard'
         'kernel:Build BalKernel'
+        'ai:Local offline LLM assistant'
+        'ids:Suricata intrusion detection'
         'help:Show usage'
         'version:Show version'
     )
@@ -49,6 +51,8 @@ _bal() {
         update)  _values 'cmd' now rollback list-snapshots clean ;;
         watch)   _values 'cmd' start stop status log ;;
         kernel)  _values 'cmd' build install status ;;
+        ai)      _values 'subcmd' chat cmd explain fix ctx doctor model status setup help version ;;
+        ids)     _values 'cmd' start stop status log rules update ;;
     esac
 }
 

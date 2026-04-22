@@ -1,0 +1,54 @@
+#compdef balai
+# Zsh completions for balai — BalOS offline AI assistant.
+
+_balai() {
+    local -a subcmds
+    subcmds=(
+        'chat:interactive REPL (default)'
+        'cmd:translate intent to a shell command'
+        'explain:explain a file, --last, or piped input'
+        'fix:diagnose an error and suggest a fix'
+        'ctx:show system context balai sees'
+        'doctor:health check + AI summary'
+        'setup:first-run setup (enable service, pull model)'
+        'status:service + model health'
+        'model:manage local models'
+        'help:show usage'
+        'version:print version'
+    )
+
+    local context state state_descr line
+    _arguments -C \
+        '1:subcommand:->sub' \
+        '*::args:->args'
+
+    case $state in
+        sub)
+            _describe -t commands 'balai subcommand' subcmds
+            ;;
+        args)
+            case "$line[1]" in
+                explain)
+                    _alternative \
+                        'files:file:_files' \
+                        'flags:flag:(--last)'
+                    ;;
+                model)
+                    local -a model_subs
+                    model_subs=(
+                        'list:show installed models'
+                        'pull:download a model'
+                        'rm:remove a local model'
+                        'default:show/set default'
+                    )
+                    if (( CURRENT == 2 )); then
+                        _describe -t commands 'model subcommand' model_subs
+                    fi
+                    ;;
+                cmd|fix|chat|ctx|doctor|setup|status) ;;
+            esac
+            ;;
+    esac
+}
+
+_balai "$@"

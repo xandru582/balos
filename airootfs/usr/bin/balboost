@@ -175,6 +175,10 @@ apply_profile() {
     # shellcheck disable=SC1090
     source "$f"
 
+    # Persist the active profile for other bal* tools (balai ctx, balmonitor).
+    mkdir -p /run/balos 2>/dev/null
+    printf 'boost:%s\n' "$profile" > /run/balos/power-profile 2>/dev/null || true
+
     echo -e "${C}${B}⚡ Applying profile: ${M}${profile}${N}\n"
     step() { echo -e "  ${G}✓${N} $*"; }
 
