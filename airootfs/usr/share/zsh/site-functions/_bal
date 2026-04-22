@@ -49,9 +49,9 @@ _bal() {
         vpn)     _values 'cmd' up down status ;;
         net)     _values 'cmd' ip iface speed ports conns dns scan connect monitor managed mac flush proxy vpn nmap ;;
         update)  _values 'cmd' now rollback list-snapshots clean ;;
-        watch)   _values 'cmd' start stop status log ;;
+        watch)   _values 'cmd' start stop status log explain ;;
         kernel)  _values 'cmd' build install status ;;
-        ai)      _values 'subcmd' chat cmd explain fix ctx doctor model status setup help version ;;
+        ai)      _values 'subcmd' chat cmd explain fix ctx doctor tip model status setup help version ;;
         ids)     _values 'cmd' start stop status log rules update ;;
     esac
 }

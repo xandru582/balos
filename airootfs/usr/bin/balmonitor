@@ -344,6 +344,13 @@ if $ONCE; then
     read_cpu_stats; read_net_stats; read_disk
     sleep 1
     render
+    # Optional BalAI proactive tip (only if model+ollama are ready; never blocks > ~12s)
+    if [[ "${BALOS_STATUS_TIP:-1}" == "1" ]] && command -v balai &>/dev/null; then
+        TIP=$(balai tip 2>/dev/null)
+        if [[ -n "$TIP" ]]; then
+            printf "\n  \033[0;35m\033[1m🧠 BalAI:\033[0m %s\n" "$TIP"
+        fi
+    fi
     exit 0
 fi
 

@@ -558,6 +558,29 @@ $(cat "$tmpf")"
     rm -f "$tmpf"
 }
 
+# One-line proactive tip based on current system state. Used by
+# `balmonitor --once` footer and `balai tip`. Non-streaming, <80 chars
+# ideal, times out fast so TUI callers are never blocked.
+cmd_tip() {
+    ensure_ollama 2>/dev/null || { echo "(balai offline)"; return 0; }
+    ensure_model   2>/dev/null || { echo "(model missing)"; return 0; }
+    local ctx
+    ctx=$(gather_ctx 2>/dev/null)
+    local prompt="Given this BalOS snapshot:
+
+$ctx
+
+If there is ONE small optimisation or concern worth mentioning right now, reply with a single line of at most 90 characters starting with '→ '. If everything looks fine, reply exactly: → all green."
+    # Silent failure if ollama is flaky — tip is decorative.
+    timeout 12 curl -fsS "${OLLAMA_URL}/api/generate" \
+        -d "$(python3 -c "import json,sys; print(json.dumps({'model':'${MODEL}','prompt':sys.argv[1],'stream':False,'options':{'num_predict':60,'temperature':0.3}}))" "$prompt")" \
+        2>/dev/null \
+        | python3 -c 'import sys,json
+try: print(json.load(sys.stdin).get("response","").strip().splitlines()[0])
+except: pass' \
+        || true
+}
+
 cmd_setup() {
     info "checking ollama service…"
     if ! need ollama; then
@@ -632,6 +655,7 @@ ${B}USAGE${N}
   balai fix  [error text]        ${D}# diagnose + suggest fix${N}
   balai ctx                      ${D}# show system context balai sees${N}
   balai doctor                   ${D}# diagnose system + AI summary${N}
+  balai tip                      ${D}# one-line proactive suggestion${N}
   balai model [list|pull|rm]     ${D}# manage local models${N}
   balai status                   ${D}# service + model health${N}
   balai setup                    ${D}# first-run: enable service + pull model${N}
@@ -662,6 +686,7 @@ case "$CMD" in
     fix|err|error)        cmd_fix "$@" ;;
     ctx|context)          cmd_ctx ;;
     doctor|diag|diagnose) cmd_doctor ;;
+    tip|suggest|hint)     cmd_tip ;;
     setup|init)           cmd_setup ;;
     status|health)        cmd_status ;;
     model|models)         cmd_model "$@" ;;

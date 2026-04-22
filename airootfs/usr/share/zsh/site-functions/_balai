@@ -10,6 +10,7 @@ _balai() {
         'fix:diagnose an error and suggest a fix'
         'ctx:show system context balai sees'
         'doctor:health check + AI summary'
+        'tip:one-line proactive suggestion'
         'setup:first-run setup (enable service, pull model)'
         'status:service + model health'
         'model:manage local models'
@@ -45,7 +46,7 @@ _balai() {
                         _describe -t commands 'model subcommand' model_subs
                     fi
                     ;;
-                cmd|fix|chat|ctx|doctor|setup|status) ;;
+                cmd|fix|chat|ctx|doctor|tip|setup|status) ;;
             esac
             ;;
     esac

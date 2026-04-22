@@ -214,6 +214,7 @@ The error is "The connection to the server localhost:8080 was refused." …
 | `balai fix [error]`    | Diagnose an error and suggest a fix                               |
 | `balai ctx`            | Dump the live system context balai would inject into your query   |
 | `balai doctor`         | Gather diagnostics (failed units, journal, disk, `.pacnew`) + AI summary |
+| `balai tip`            | One-line proactive suggestion based on live context (shown in `bal status`) |
 | `balai model list`     | Show locally installed models and sizes                           |
 | `balai model pull X`   | Download another Qwen/Llama/Phi model (needs network)             |
 | `balai status`         | Service health, active model, RAM                                 |
@@ -254,6 +255,15 @@ BalAI is wired into every surface of the OS, not just its own CLI:
 - **Zsh completions** — `bal ai <TAB>`, `balai <TAB>`, `bal shield <TAB>`, etc.
 - **Unified state** — `bal boost|saver|shield|…` publish to `/run/balos/*`, which
   `balai ctx` reads so the model always sees the *current* system, not guesses.
+- **`balmonitor` / `bal status`** — appends a one-line AI tip based on the
+  current snapshot (disable with `BALOS_STATUS_TIP=0`).
+- **`balwatch`** — optional AI auto-explain on critical security alerts
+  (`sudo touch /etc/balos/watch-ai-explain.on`) plus `balwatch explain` on
+  demand.
+- **`balrecon`** — every report gets an AI "Attack Surface / Top 3 Priorities"
+  section appended automatically (disable with `--no-ai`).
+- **Smart `aifix`** — with no args, reads the last command + its exit code
+  (captured by zsh hooks) and feeds both to the model, so you never paste.
 
 ### Context awareness
 

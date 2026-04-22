@@ -17,6 +17,7 @@ ${B}OPTIONS${N}
   ${C}--deep${N}        Full 65535 ports + scripts
   ${C}--web${N}         Add web discovery (gobuster, ffuf, whatweb)
   ${C}--passive${N}     No active scanning (OSINT only)
+  ${C}--no-ai${N}       Skip the AI-generated attack summary in REPORT.md
   ${C}--out DIR${N}     Output directory (default: ./recon-<target>-<date>)
 
 ${B}EXAMPLES${N}
@@ -30,7 +31,7 @@ TARGET="${1:-}"
 [[ -z "$TARGET" || "$TARGET" =~ ^- ]] && { usage; exit 0; }
 shift
 
-DEEP=false; WEB=false; PASSIVE=false; QUICK=false
+DEEP=false; WEB=false; PASSIVE=false; QUICK=false; AI=true
 OUT=""
 while (($#)); do
     case "$1" in
@@ -38,6 +39,8 @@ while (($#)); do
         --deep)  DEEP=true; shift ;;
         --web)   WEB=true; shift ;;
         --passive) PASSIVE=true; shift ;;
+        --no-ai) AI=false; shift ;;
+        --ai)    AI=true; shift ;;
         --out)   OUT="$2"; shift 2 ;;
         *)       echo "unknown: $1"; exit 1 ;;
     esac
@@ -179,6 +182,45 @@ EOF
     grep -q 'VNC\|RDP' "$OUT/nmap-quick.nmap" 2>/dev/null && echo "- [ ] Remote access: hydra / crowbar"
 } >> "$OUT/REPORT.md"
 
+# ═══ AI ATTACK SUMMARY ═════════════════════════════════════════
+if $AI && command -v balai &>/dev/null; then
+    step "balai · drafting attack summary"
+    NMAP_EXCERPT=$(grep -E '^\d+/tcp|open ' "$OUT/nmap-quick.nmap" 2>/dev/null | head -40)
+    VULN_EXCERPT=""
+    [[ -f "$OUT/nmap-vuln.nmap" ]] && VULN_EXCERPT=$(grep -E 'VULNERABLE|CVE-|likely vulnerable' "$OUT/nmap-vuln.nmap" 2>/dev/null | head -20)
+    NUCLEI_EXCERPT=""
+    [[ -f "$OUT/nuclei.txt" ]] && NUCLEI_EXCERPT=$(head -20 "$OUT/nuclei.txt")
+
+    PROMPT=$(cat <<EOF
+You are a red-team assistant. The operator ran a recon scan on target "$TARGET" and got:
+
+NMAP:
+$NMAP_EXCERPT
+
+${VULN_EXCERPT:+VULN SCAN:}
+$VULN_EXCERPT
+
+${NUCLEI_EXCERPT:+NUCLEI:}
+$NUCLEI_EXCERPT
+
+Write a concise markdown attack summary with these sections:
+## Attack Surface (bullet list, 1 line each)
+## Top 3 Priorities (ranked, with the exact command to try)
+## Risk / Noise level
+
+Be concrete. No fluff. If nothing interesting, say so in one line.
+EOF
+)
+    echo -e "\n## AI Attack Summary\n" >> "$OUT/REPORT.md"
+    if timeout 60 balai "$PROMPT" >> "$OUT/REPORT.md" 2>/dev/null; then
+        log "  ✓ AI summary appended to REPORT.md"
+    else
+        echo "_(balai unavailable — skipped)_" >> "$OUT/REPORT.md"
+        log "  (balai unreachable — skipped AI summary)"
+    fi
+fi
+
 echo -e "\n${G}${B}✓ Recon complete${N}"
 echo -e "  Report:  ${C}${OUT}/REPORT.md${N}"
 echo -e "  View:    ${C}bat ${OUT}/REPORT.md${N}"
+$AI || echo -e "  ${D}(AI summary skipped: --no-ai)${N}"

@@ -21,6 +21,17 @@ alert() {
         DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${uid}/bus" \
             runuser -u "$u" -- notify-send -u "$urgency" -i security-high "BalOS watch" "$msg" 2>/dev/null || true
     done
+    # Opt-in AI auto-explain on critical events.
+    #   /etc/balos/watch-ai-explain.on  OR  BALWATCH_AI=1
+    if [[ "$urgency" == "critical" ]] \
+        && { [[ -f /etc/balos/watch-ai-explain.on ]] || [[ "${BALWATCH_AI:-0}" == "1" ]]; } \
+        && command -v balai &>/dev/null; then
+        (
+            timeout 30 balai "Security alert on my BalOS box: $msg
+Explain in 2 short sentences: what it likely is, and one concrete action I should take now." \
+                2>/dev/null | tee -a "$LOG" >/dev/null || true
+        ) &
+    fi
 }
 
 start_daemon() {
@@ -128,12 +139,33 @@ show_status() {
     echo ""
     echo -e "${B}Recent alerts:${N}"
     [[ -f "$LOG" ]] && tail -20 "$LOG" || echo "  (none yet)"
+    if [[ -f /etc/balos/watch-ai-explain.on ]] || [[ "${BALWATCH_AI:-0}" == "1" ]]; then
+        echo -e "\n  ${M}AI auto-explain: ON${N}  (use ${C}balwatch explain${N} for on-demand)"
+    else
+        echo -e "\n  ${D:-\033[2m}AI auto-explain: off${N}  (enable: sudo touch /etc/balos/watch-ai-explain.on)"
+    fi
+}
+
+explain_alerts() {
+    if ! command -v balai &>/dev/null; then
+        echo -e "${R}balai not installed — can't explain${N}"; exit 1
+    fi
+    if [[ ! -s "$LOG" ]]; then
+        echo "no alerts to explain yet"; exit 0
+    fi
+    local n="${1:-10}"
+    echo -e "${C}${B}▸ Asking balai to interpret the last $n alerts...${N}\n"
+    local recent
+    recent=$(tail -n "$n" "$LOG")
+    printf 'Recent BalOS security alerts from balwatch:\n\n%s\n\nAnalyse these alerts together. What is the likely story (coincidence, user action, or real threat)? Give 3 concrete next steps, ranked by urgency.' "$recent" \
+        | balai
 }
 
 case "$ACTION" in
-    start)   start_daemon ;;
-    stop)    stop_daemon ;;
-    restart) stop_daemon; sleep 1; start_daemon ;;
-    log)     [[ -f "$LOG" ]] && tail -f "$LOG" || echo "no log yet" ;;
-    status|*) show_status ;;
+    start)        start_daemon ;;
+    stop)         stop_daemon ;;
+    restart)      stop_daemon; sleep 1; start_daemon ;;
+    log)          [[ -f "$LOG" ]] && tail -f "$LOG" || echo "no log yet" ;;
+    explain|ai)   shift || true; explain_alerts "${1:-10}" ;;
+    status|*)     show_status ;;
 esac
