@@ -162,6 +162,8 @@ ${G}${B}╚═══════════════════════
     ${C}bal hack recon${N}            — fire up a pentest workspace
     ${C}balai${N}                     — offline AI assistant (ask anything)
     ${C}? "how do I…"${N}             — shell shortcut to BalAI
+    ${C}balai doctor${N}              — read-only health check + AI verdict
+    ${C}balai remember "…"${N}        — persistent notes the AI keeps in mind
     ${C}bal kernel build${N}          — compile custom BalKernel (~45 min)
 
   ${D}Keep your keys safe. Hack responsibly.${N}
