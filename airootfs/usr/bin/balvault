@@ -26,6 +26,8 @@ ${C}${B}balvault${N} — encrypted secrets
   ${C}sync${N} ${D}<git-url>${N}  Sync to encrypted git remote
   ${C}lock${N}              Forget GPG cache immediately
   ${C}qr${N} ${D}<name>${N}       Show secret as QR code (for phone)
+  ${C}strength${N} ${D}[-p name]${N} Estimate password entropy + AI verdict (stdin or vault entry)
+  ${C}audit${N}             Vault hygiene report (entries, duplicates, stale) + AI suggestions
 
 ${B}VAULT:${N} ${VAULT_DIR}
 EOF
@@ -92,6 +94,138 @@ qr_secret() {
     pass show "$name" | head -1 | qrencode -t ansiutf8
 }
 
+# Evaluate the *strength* of a password read from stdin (or -p <name> for
+# an existing entry). Critical: the raw password NEVER leaves this script.
+# We compute entropy stats locally and then — if balai is around — ask the
+# local model to comment on the stats (length, charset mix, dictionary
+# hits from /usr/share/dict/words), not the actual string.
+strength() {
+    local pw name="" from_vault=false
+    while (($#)); do
+        case "$1" in
+            -p|--pass) name="$2"; from_vault=true; shift 2 ;;
+            -h|--help) echo "usage: balvault strength [-p <vault-name>]  (else: read stdin)"; return 0 ;;
+            *) shift ;;
+        esac
+    done
+
+    if $from_vault; then
+        [[ -n "$name" ]] || { echo "usage: balvault strength -p <name>"; return 1; }
+        pw=$(pass show "$name" | head -1)
+    else
+        if [[ -t 0 ]]; then
+            read -rsp "password (hidden): " pw; echo
+        else
+            IFS= read -r pw
+        fi
+    fi
+    [[ -n "$pw" ]] || { echo "empty password"; return 1; }
+
+    # Local stats — NO network, no AI yet.
+    local len=${#pw}
+    local classes=0
+    [[ "$pw" =~ [a-z] ]] && classes=$((classes+1))
+    [[ "$pw" =~ [A-Z] ]] && classes=$((classes+1))
+    [[ "$pw" =~ [0-9] ]] && classes=$((classes+1))
+    [[ "$pw" =~ [^A-Za-z0-9] ]] && classes=$((classes+1))
+
+    # Pool size per class (standard Shannon-style estimate).
+    local pool=0
+    [[ "$pw" =~ [a-z] ]] && pool=$((pool+26))
+    [[ "$pw" =~ [A-Z] ]] && pool=$((pool+26))
+    [[ "$pw" =~ [0-9] ]] && pool=$((pool+10))
+    [[ "$pw" =~ [^A-Za-z0-9] ]] && pool=$((pool+33))
+    # bits = len * log2(pool)  — approximate via python for log2
+    local bits
+    bits=$(python3 -c "import math; print(f'{$len * math.log2($pool):.0f}')" 2>/dev/null || echo "?")
+
+    # Dictionary hit check (warn if the whole password is a common word).
+    local dict_hit="no"
+    for d in /usr/share/dict/words /usr/share/dict/cracklib-small; do
+        [[ -f "$d" ]] || continue
+        if grep -qiFx -- "$pw" "$d" 2>/dev/null; then
+            dict_hit="yes ($d)"
+            break
+        fi
+    done
+
+    # Repeated-char run detection (aaaa, 1111).
+    local max_run=1 cur=1 prev=""
+    local i; for ((i=0; i<len; i++)); do
+        local ch="${pw:$i:1}"
+        if [[ "$ch" == "$prev" ]]; then cur=$((cur+1)); (( cur > max_run )) && max_run=$cur
+        else cur=1; fi
+        prev="$ch"
+    done
+
+    # Verdict buckets.
+    local verdict color
+    if   (( bits >= 80 )); then verdict="strong";   color="$G"
+    elif (( bits >= 60 )); then verdict="good";     color="$G"
+    elif (( bits >= 40 )); then verdict="fair";     color="$Y"
+    elif (( bits >= 25 )); then verdict="weak";     color="$Y"
+    else                         verdict="terrible"; color="$R"
+    fi
+
+    echo ""
+    echo -e "  length        ${B}${len}${N}"
+    echo -e "  character mix ${classes}/4 classes (pool=${pool})"
+    echo -e "  entropy       ~${bits} bits  →  ${color}${B}${verdict}${N}"
+    echo -e "  longest run   ${max_run} (≥4 is a red flag)"
+    echo -e "  dict hit      ${dict_hit}"
+    echo ""
+
+    # Optional AI commentary on the STATS (never the raw string).
+    if command -v balai >/dev/null 2>&1; then
+        local stats
+        stats="length=${len}, classes=${classes}/4, pool=${pool}, bits≈${bits}, longest_run=${max_run}, dict_hit=${dict_hit}"
+        echo -e "${M}${B}AI verdict:${N}"
+        timeout 20 balai "Password-strength stats (no raw password): ${stats}
+Give a 1-paragraph plain-English assessment and ONE concrete suggestion if weak." 2>/dev/null || \
+            echo "(balai unavailable)"
+    fi
+}
+
+# Audit the whole vault: counts, duplicates, stale entries (> 1 year).
+# Never reveals secrets — only filenames / modtimes.
+audit() {
+    [[ -d "$VAULT_DIR" ]] || { echo "no vault at $VAULT_DIR — run: balvault init"; return 1; }
+    echo -e "${M}${B}▸ BalVault audit${N}\n"
+    local total; total=$(find "$VAULT_DIR" -name '*.gpg' | wc -l)
+    echo -e "  entries:  ${B}${total}${N}"
+
+    # Names that might collide (case-insensitive duplicates).
+    local dups
+    dups=$(find "$VAULT_DIR" -name '*.gpg' -printf '%f\n' | sed 's/\.gpg$//' | \
+           tr '[:upper:]' '[:lower:]' | sort | uniq -d)
+    if [[ -n "$dups" ]]; then
+        echo -e "  ${Y}duplicates (case-insensitive):${N}"
+        echo "$dups" | sed 's/^/    /'
+    else
+        echo -e "  duplicates: none"
+    fi
+
+    # Stale secrets (> 365 days old).
+    local stale_count
+    stale_count=$(find "$VAULT_DIR" -name '*.gpg' -mtime +365 2>/dev/null | wc -l)
+    if (( stale_count > 0 )); then
+        echo -e "  ${Y}stale (>1 year): ${stale_count}${N} — consider rotation"
+    else
+        echo -e "  stale:     none"
+    fi
+    echo ""
+
+    if command -v balai >/dev/null 2>&1; then
+        echo -e "${M}${B}AI recommendation:${N}"
+        timeout 25 balai "My password vault audit:
+  entries:     $total
+  duplicates:  $(echo "$dups" | wc -l)
+  stale >365d: $stale_count
+Suggest 2 concrete housekeeping actions (no generic advice)." 2>/dev/null || \
+            echo "(balai unavailable)"
+    fi
+}
+
 need pass || { echo "install: sudo pacman -S pass"; exit 1; }
 
 case "${1:-menu}" in
@@ -105,5 +239,7 @@ case "${1:-menu}" in
     sync|git) shift; sync_vault "$@" ;;
     lock)  lock_vault ;;
     qr)    shift; qr_secret "$@" ;;
+    strength|check) shift; strength "$@" ;;
+    audit) audit ;;
     menu|help|*) usage ;;
 esac

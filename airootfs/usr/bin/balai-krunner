@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+# balai-krunner — Plasma KRunner plugin that forwards queries to BalAI.
+#
+# Register on the session bus as `com.balos.BalAIRunner` / `/BalAIRunner`
+# and implement the `org.kde.krunner1` interface. Plasma discovers us
+# via /usr/share/krunner/dbusplugins/balai.desktop, so the plugin is
+# zero-click after install.
+#
+# Trigger: anything starting with "?", "ai ", "balai ", or the single
+# word "?". Because the KRunner protocol also invokes us unprefixed for
+# broad keyword matches, we deliberately stay quiet on queries that
+# don't look like questions — we don't want to spam the launcher.
+#
+# Activation opens `balai-chat "<query>"`, which auto-sends the question.
+#
+# Why dbus-python and not QtDBus? dbus-python is a base dep of any
+# Plasma session, whereas pulling the full Qt event loop into a
+# long-lived daemon would waste RAM. KRunner plugins are expected to
+# be tiny.
+
+from __future__ import annotations
+
+import os
+import signal
+import subprocess
+import sys
+
+try:
+    import dbus
+    import dbus.service
+    import dbus.mainloop.glib
+    from gi.repository import GLib
+except ImportError as e:
+    print(f"balai-krunner: missing dependency ({e}). "
+          "pacman -S python-dbus python-gobject",
+          file=sys.stderr)
+    sys.exit(1)
+
+
+SERVICE_NAME = "com.balos.BalAIRunner"
+OBJECT_PATH  = "/BalAIRunner"
+INTERFACE    = "org.kde.krunner1"
+
+ICON = "balai"  # matches /usr/share/icons/hicolor/scalable/apps/balai.svg
+
+
+# KRunner triggers that should produce a match. Everything else is
+# ignored so we don't clutter unrelated searches.
+TRIGGER_PREFIXES = ("?", "ai ", "ai:", "balai ", "balai:")
+
+
+def _strip_trigger(query: str) -> str | None:
+    """Return the bare question, or None if this isn't one of ours."""
+    q = query.strip()
+    if not q:
+        return None
+    if q == "?":
+        return ""  # bare ? = open the chat GUI blank
+    for pfx in TRIGGER_PREFIXES:
+        if q.lower().startswith(pfx):
+            return q[len(pfx):].strip()
+    # Unprefixed: only bite when it looks like a natural-language question.
+    # Heuristics kept conservative to avoid KRunner spam.
+    lower = q.lower()
+    if (lower.startswith(("how ", "what ", "why ", "when ",
+                           "where ", "who ", "explain ",
+                           "cómo ", "qué ", "por qué ", "cuándo ",
+                           "dónde ", "quién "))
+            or q.endswith("?")):
+        return q
+    return None
+
+
+class BalAIRunner(dbus.service.Object):
+    """KRunner backend — implements org.kde.krunner1."""
+
+    @dbus.service.method(INTERFACE, in_signature="s",
+                         out_signature="a(sssida{sv})")
+    def Match(self, query):
+        q = _strip_trigger(query)
+        if q is None:
+            return []
+        label = ("Ask BalAI: " + q) if q else "Open BalAI chat"
+        subtext = "offline · local · Qwen2.5-1.5B"
+        # Tuple: (data, display, icon, type, relevance, properties)
+        # type: 100 = ExactMatch, 50 = CompletionMatch, 10 = Possible
+        match = (
+            q or " ",              # data passed back to Run()
+            label,
+            ICON,
+            100,                   # ExactMatch — we want to be on top
+            1.0,                   # full relevance
+            {
+                "subtext": subtext,
+                "actions": [],
+            },
+        )
+        return [match]
+
+    @dbus.service.method(INTERFACE, in_signature="ss", out_signature="")
+    def Run(self, match_id, action_id):
+        # match_id is the `data` we returned above; " " means "no query".
+        q = (match_id or "").strip()
+        argv = ["balai-chat"]
+        if q:
+            argv.append(q)
+        # Detached — we don't want to hold KRunner waiting on the model.
+        env = dict(os.environ)
+        env.setdefault("QT_QPA_PLATFORM", "wayland;xcb")
+        try:
+            subprocess.Popen(
+                argv,
+                env=env,
+                start_new_session=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except FileNotFoundError:
+            # Fallback: open the CLI in a terminal if the GUI is missing.
+            subprocess.Popen(
+                ["kitty", "--class=balai-chat", "--title=BalAI", "--hold",
+                 "--", "balai", q or "help"],
+                env=env,
+                start_new_session=True,
+            )
+
+    @dbus.service.method(INTERFACE, in_signature="", out_signature="a(sss)")
+    def Actions(self):
+        # Extra action buttons shown to the right of the match.
+        return [
+            ("doctor", "Run system doctor", "system-help"),
+            ("ctx",    "Show system context", "view-list-details"),
+        ]
+
+    @dbus.service.method(INTERFACE, in_signature="", out_signature="")
+    def Teardown(self):
+        # Called when KRunner is closing us — no persistent state to flush.
+        pass
+
+
+def main() -> int:
+    # Leave SIGPIPE default so pipes close cleanly when Plasma unloads us.
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+
+    dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+    bus = dbus.SessionBus()
+    try:
+        bus.request_name(SERVICE_NAME, dbus.bus.NAME_FLAG_DO_NOT_QUEUE)
+    except dbus.DBusException as e:
+        print(f"balai-krunner: could not own {SERVICE_NAME}: {e}",
+              file=sys.stderr)
+        return 1
+
+    BalAIRunner(bus, OBJECT_PATH)
+    loop = GLib.MainLoop()
+    try:
+        loop.run()
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

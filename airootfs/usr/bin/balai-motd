@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# balai-motd — one-screen MOTD for TTY logins, with a live BalAI verdict.
+#
+# Called by /etc/profile.d/balos-motd.sh on first interactive shell of a
+# session. Output is short on purpose — two blocks: a plain status
+# dashboard (always shown) and an optional AI one-liner (skipped if
+# ollama is slow / missing / opted-out).
+#
+# Opt-out:   export BALOS_MOTD=0                     (per user)
+#            sudo touch /etc/balos/motd.off          (system-wide)
+# Opt-in AI: sudo touch /etc/balos/motd-ai.on        (off by default)
+
+set -uo pipefail
+
+# Per-session one-shot: don't spam if the user opens several shells.
+MARK_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+[[ -d "$MARK_DIR" ]] || MARK_DIR="/tmp"
+MARK="$MARK_DIR/.balos-motd-shown"
+[[ -f "$MARK" ]] && exit 0
+[[ "${BALOS_MOTD:-1}" == "0" ]] && exit 0
+[[ -f /etc/balos/motd.off ]] && exit 0
+
+touch "$MARK" 2>/dev/null || true
+
+G='\033[0;32m'; C='\033[0;36m'; M='\033[0;35m'; Y='\033[1;33m'
+R='\033[0;31m'; B='\033[1m'; D='\033[2m'; N='\033[0m'
+
+_read() { cat "$1" 2>/dev/null | tr -d '\n'; }
+
+# ── quick probes ─────────────────────────────────────────────────
+bat=""; ac=""
+for b in /sys/class/power_supply/BAT*; do
+    [[ -d "$b" ]] || continue
+    bat="$(_read "$b/capacity")% $(_read "$b/status")"
+    break
+done
+for a in /sys/class/power_supply/A[CD]*; do
+    [[ -d "$a" ]] || continue
+    [[ "$(_read "$a/online")" == "1" ]] && ac="plug"
+done
+
+load=$(cut -d' ' -f1 /proc/loadavg 2>/dev/null)
+mem=$(free -h 2>/dev/null | awk '/^Mem:/{printf "%s/%s", $3, $2}')
+uptime=$(uptime -p 2>/dev/null | sed 's/^up //')
+kernel=$(uname -r 2>/dev/null)
+
+shield=$(_read /run/balos/shield-tier)
+profile=$(_read /run/balos/power-profile | tr ':' ' ')
+iface=""
+for n in /sys/class/net/*/; do
+    name="$(basename "$n")"
+    [[ "$name" == "lo" ]] && continue
+    [[ "$(_read "$n/operstate")" == "up" ]] && { iface="$name"; break; }
+done
+
+ssid=""
+command -v iwgetid >/dev/null 2>&1 && ssid=$(iwgetid -r 2>/dev/null)
+
+vpn="off"
+if command -v wg >/dev/null 2>&1 && wg show wg0 >/dev/null 2>&1; then
+    vpn="wg0 up"
+fi
+
+# ── render ────────────────────────────────────────────────────────
+printf '\n'
+printf "${M}${B}  BalOS${N}  ${D}hack · play · evade · endure · assist${N}\n"
+printf "${M}  ──────${N}\n"
+printf "  ${C}kernel${N}  %s    ${C}uptime${N}  %s\n" "${kernel:-?}" "${uptime:-?}"
+printf "  ${C}load  ${N}  %-8s ${C}mem   ${N}  %s\n" "${load:-?}" "${mem:-?}"
+if [[ -n "$bat" ]]; then
+    printf "  ${C}power ${N}  %s    %s\n" "${bat}${ac:+ ($ac)}" "${profile:+profile: $profile}"
+else
+    [[ -n "$profile" ]] && printf "  ${C}power ${N}  profile: %s\n" "$profile"
+fi
+printf "  ${C}net   ${N}  iface: %-8s ssid: %-10s vpn: %s\n" "${iface:-none}" "${ssid:--}" "$vpn"
+printf "  ${C}shield${N}  %s\n" "${shield:-?}"
+printf '\n'
+
+# ── optional AI tip (cheap, single line, bounded) ────────────────
+if { [[ -f /etc/balos/motd-ai.on ]] || [[ "${BALOS_MOTD_AI:-0}" == "1" ]]; } \
+    && command -v balai >/dev/null 2>&1; then
+    # 4-second hard limit so MOTD never blocks the login prompt.
+    tip=$(timeout 4 balai tip 2>/dev/null | head -1)
+    if [[ -n "$tip" ]]; then
+        # Colour the arrow + keep the rest muted.
+        printf "  ${M}${B}🧠${N}  %s\n\n" "$tip"
+    fi
+fi
+
+printf "  ${D}tips:${N}  ${C}bal status${N}  ${D}·${N}  ${C}balai \"...\"${N}  ${D}·${N}  ${C}bal panic soft${N}\n\n"

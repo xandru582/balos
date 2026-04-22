@@ -6,6 +6,7 @@ _balai() {
     subcmds=(
         'chat:interactive REPL (default)'
         'cmd:translate intent to a shell command'
+        'agent:iterative approval loop (propose \u2192 run \u2192 observe)'
         'explain:explain a file, --last, or piped input'
         'fix:diagnose an error and suggest a fix'
         'ctx:show system context balai sees'
@@ -35,7 +36,7 @@ _balai() {
                 explain)
                     _alternative \
                         'files:file:_files' \
-                        'flags:flag:(--last)'
+                        'flags:flag:(--last --diff)'
                     ;;
                 model)
                     local -a model_subs
@@ -49,7 +50,7 @@ _balai() {
                         _describe -t commands 'model subcommand' model_subs
                     fi
                     ;;
-                cmd|fix|chat|ctx|doctor|tip|remember|memory|forget|setup|status) ;;
+                cmd|agent|fix|chat|ctx|doctor|tip|remember|memory|forget|setup|status) ;;
             esac
             ;;
     esac

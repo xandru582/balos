@@ -1,0 +1,25 @@
+[Desktop Entry]
+Type=Service
+Name=BalAI
+Comment=Ask the local offline Qwen2.5 AI from KRunner
+Icon=balai
+X-KDE-ServiceTypes=Plasma/Runner
+
+# Plasma ≥ 5.27 / 6.x uses this metadata to locate the DBus runner.
+X-Plasma-API=DBus
+X-Plasma-DBusRunner-Service=com.balos.BalAIRunner
+X-Plasma-DBusRunner-Path=/BalAIRunner
+X-Plasma-DBusRunner-Interface=org.kde.krunner1
+
+# Trigger keywords shown to the user in the KRunner settings.
+X-Plasma-RequiredExtensions=
+X-KDE-PluginInfo-Author=BalOS
+X-KDE-PluginInfo-Email=
+X-KDE-PluginInfo-Name=balai
+X-KDE-PluginInfo-Version=1.0
+X-KDE-PluginInfo-Website=https://github.com/xandru582/balos
+X-KDE-PluginInfo-Category=AI
+X-KDE-PluginInfo-License=MIT
+X-KDE-PluginInfo-EnabledByDefault=true
+
+TryExec=/usr/bin/balai-krunner

@@ -210,7 +210,9 @@ The error is "The connection to the server localhost:8080 was refused." …
 | `balai`                | Interactive chat REPL (streaming, `/clear`, `/model`, `/help`)    |
 | `balai "question"`     | One-shot query, streams answer and exits                          |
 | `balai cmd "intent"`   | Intent → one shell command → confirm → run (destructive blocked)  |
+| `balai agent "goal"`   | **Iterative approval loop** — propose → approve → run → observe, until `DONE` |
 | `balai explain <file>` | Explain a file, `--last` command, or piped stdin                  |
+| `balai explain --diff A B` | Semantic diff of two files — "what really changed"            |
 | `balai fix [error]`    | Diagnose an error and suggest a fix                               |
 | `balai ctx`            | Dump the live system context balai would inject into your query   |
 | `balai doctor`         | Gather diagnostics (failed units, journal, disk, `.pacnew`) + AI summary |
@@ -268,6 +270,9 @@ BalAI is wired into every surface of the OS, not just its own CLI:
   - `<leader>af`  → fix
 - **KDE Plasma desktop**
   - `Meta+A`          → launch **BalAI chat GUI** (Qt, live system panel, streaming)
+  - **KRunner** (`Alt+Space`) → type `? your question` or `ai how do I…` to ask
+    directly from the launcher; Enter opens the GUI pre-filled with the
+    answer streaming in
   - `Meta+Shift+A`    → ask via `kdialog` (one-shot in kitty)
   - `Meta+Ctrl+A`     → generate a command via `kdialog`
   - `Meta+B`          → bal fzf menu
@@ -294,6 +299,14 @@ BalAI is wired into every surface of the OS, not just its own CLI:
   piped through `balai fix` so you get a diagnosis before scrolling.
 - **Smart `aifix`** — with no args, reads the last command + its exit code
   (captured by zsh hooks) and feeds both to the model, so you never paste.
+- **TTY login MOTD** — `balai-motd` prints a compact dashboard on first
+  interactive shell. Opt-in AI one-liner: `sudo touch /etc/balos/motd-ai.on`.
+  Disable entirely: `sudo touch /etc/balos/motd.off`.
+- **`balvault strength` / `balvault audit`** — password entropy estimate
+  (bits, class mix, dict hits, runs) plus an AI verdict. The raw password
+  never leaves the script — only the stats are sent.
+- **`bal hack ? …`** — inside a BalHack workspace (recon/web/wifi/…),
+  ask for the next step and the model sees which workspace you're in.
 - **Persistent memory** — `balai remember "I use btrfs and nvim"`. Notes live
   at `$XDG_STATE_HOME/balai/notes.md` and get prepended to every prompt.
   Wipe all: `balai forget`. Wipe one: `balai forget btrfs`.

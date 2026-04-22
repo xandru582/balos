@@ -43,7 +43,7 @@ _bal() {
         stealth) _values 'action' on off status mac test leaks ;;
         hack)    _values 'mode' recon web wifi reverse forensics crack osint menu ;;
         panic)   _values 'tier' soft hard nuclear status ;;
-        vault)   _values 'cmd' init add get list rm edit sync lock unlock gen ;;
+        vault)   _values 'cmd' init add get list rm edit sync lock unlock gen strength audit qr ;;
         pwn)     _values 'cmd' listen gen encode stage ;;
         geo)     _values 'cmd' auto-on auto-off add list status ;;
         clip)    _values 'cmd' add list get rm purge ;;
@@ -52,7 +52,7 @@ _bal() {
         update)  _values 'cmd' now rollback list-snapshots clean ;;
         watch)   _values 'cmd' start stop status log explain ;;
         kernel)  _values 'cmd' build install status ;;
-        ai)      _values 'subcmd' chat cmd explain fix ctx doctor tip remember memory forget model status setup help version ;;
+        ai)      _values 'subcmd' chat cmd agent explain fix ctx doctor tip remember memory forget model status setup help version ;;
         ids)     _values 'cmd' start stop status log rules update ;;
     esac
 }

@@ -151,5 +151,16 @@ case "$MODE" in
     forensics|forensic|fr) shift; ws_forensics ;;
     crack|password|pass)   shift; ws_crack ;;
     osint|recon-ng)        shift; ws_osint "$@" ;;
+    # Contextual "?" — asks balai with awareness of the active workspace
+    # name and target. Useful when the user is inside a tmux pane and
+    # wants a hint without breaking flow.
+    ?|ask|ai)              shift
+        q="${*:-next step}"
+        ws="$(tmux display-message -p '#S' 2>/dev/null || echo 'none')"
+        target="$(tmux display-message -p '#{pane_title}' 2>/dev/null || echo '-')"
+        command -v balai >/dev/null 2>&1 || { echo "balai not installed"; exit 1; }
+        balai "Inside BalHack workspace '${ws}' (target: ${target}). Question: ${q}
+Give ONE concrete next command, preferring tools already available in this workspace (nmap, ffuf, sqlmap, aircrack-ng, radare2, hashcat, etc.)."
+        ;;
     menu|help|*)           menu ;;
 esac

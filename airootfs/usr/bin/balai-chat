@@ -1005,6 +1005,14 @@ def main():
 
     w = MainWindow()
     w.show()
+    # If called with an initial query (e.g. from KRunner or a desktop
+    # action), pre-send it so the user drops straight into the answer.
+    args = [a for a in sys.argv[1:] if not a.startswith("-")]
+    if args:
+        initial = " ".join(args).strip()
+        if initial:
+            # Fire after the event loop is running so the window exists.
+            QTimer.singleShot(50, lambda: w._send(initial))
     sys.exit(app.exec())
 
 

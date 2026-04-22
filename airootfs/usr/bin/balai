@@ -405,6 +405,39 @@ cmd_ctx() {
     fi
 }
 
+# Returns 0 if the command looks destructive, 1 otherwise.
+# Shared between cmd_cmd and cmd_agent. Pattern list kept in one place.
+is_destructive() {
+    local cmd="$1"
+    local sysdirs='(home|etc|var|usr|bin|sbin|boot|lib|lib32|lib64|opt|root|srv|tmp|dev|proc|sys)'
+    local danger_alts=(
+        "rm[[:space:]]+-[a-zA-Z]*[rR][a-zA-Z]*[fF][a-zA-Z]*[[:space:]]+(--[[:space:]]+)?/([[:space:];&|]|\$)"
+        "rm[[:space:]]+-[a-zA-Z]*[fF][a-zA-Z]*[rR][a-zA-Z]*[[:space:]]+(--[[:space:]]+)?/([[:space:];&|]|\$)"
+        "rm[[:space:]]+-[a-zA-Z]*[rR][a-zA-Z]*[fF][a-zA-Z]*[[:space:]]+(--[[:space:]]+)?/${sysdirs}([[:space:];&|/]|\$)"
+        "rm[[:space:]]+-[a-zA-Z]*[fF][a-zA-Z]*[rR][a-zA-Z]*[[:space:]]+(--[[:space:]]+)?/${sysdirs}([[:space:];&|/]|\$)"
+        "dd[[:space:]].*of=/dev/(sd|nvme|hd|mmc|vd|loop)"
+        "mkfs\.[a-z0-9]+[[:space:]]+/dev/"
+        "wipefs[[:space:]]+(-[afFq]+[[:space:]]+)?/dev/"
+        "shred[[:space:]].*[[:space:]]/dev/"
+        ">[[:space:]]*/dev/(sd|nvme|hd|mmc|vd)"
+        "blkdiscard[[:space:]]+/dev/"
+        "(s?fdisk|sgdisk|parted)[[:space:]]+(--[[:alpha:]-]+[[:space:]]+)?/dev/"
+        "cryptsetup[[:space:]]+(erase|luksRemoveKey|luksKillSlot|luksErase)"
+        "chmod[[:space:]]+-[a-zA-Z]*R[a-zA-Z]*[[:space:]]+[0-9]+[[:space:]]+/([[:space:];&|]|\$)"
+        "chmod[[:space:]]+-[a-zA-Z]*R[a-zA-Z]*[[:space:]]+[0-9]+[[:space:]]+/${sysdirs}([[:space:];&|/]|\$)"
+        "chown[[:space:]]+-[a-zA-Z]*R[a-zA-Z]*[[:space:]]+[^[:space:]]+[[:space:]]+/([[:space:];&|]|\$)"
+        "chown[[:space:]]+-[a-zA-Z]*R[a-zA-Z]*[[:space:]]+[^[:space:]]+[[:space:]]+/${sysdirs}([[:space:];&|/]|\$)"
+        "(curl|wget|fetch)[[:space:]][^|]*\\|[[:space:]]*(sudo[[:space:]]+)?(sh|bash|zsh|dash|ksh|fish|python[23]?|perl|ruby|node)([[:space:];&|]|\$)"
+        ":[[:space:]]*\\([[:space:]]*\\)[[:space:]]*\\{"
+        "chmod[[:space:]]+(-[a-zA-Z]+[[:space:]]+)?0?777[[:space:]]+/([[:space:];&|]|\$)"
+        "setenforce[[:space:]]+0"
+        "(killall|pkill)([[:space:]]+-[a-zA-Z0-9]+)*[[:space:]]+(systemd|init|sshd|NetworkManager|dbus|polkitd)"
+    )
+    local anchor='(^|[[:space:];&|`(])'
+    local danger_re="${anchor}($(IFS='|'; echo "${danger_alts[*]}"))"
+    printf '%s' "$cmd" | grep -qE "$danger_re"
+}
+
 cmd_cmd() {
     [[ $# -eq 0 ]] && die "usage: balai cmd \"<what you want to do>\""
     ensure_ollama
@@ -427,62 +460,9 @@ cmd_cmd() {
     echo -e "${C}$cmd${N}"
     echo ""
 
-    # ── Safety block: refuse to auto-run obviously destructive commands.
-    # Rule of thumb: we'd rather false-positive and make the user copy-paste
-    # than false-negative once and eat their disk.
-    #
-    # Categories covered:
-    #   1. Filesystem wipes: rm -rf on / or any top-level system dir
-    #   2. Block-device writes: dd/mkfs/wipefs/shred/blkdiscard + /dev/*
-    #   3. Partition tooling: fdisk/parted/sfdisk/sgdisk on /dev/*
-    #   4. LUKS destruction: cryptsetup erase / luksKillSlot / luksRemoveKey
-    #   5. Recursive chmod/chown rooted at / or system dirs
-    #   6. Remote code execution: curl|wget piped into sh/bash/zsh/python…
-    #   7. Fork bombs: `:(){...}`
-    #   8. Privilege blast-radius: chmod 777 /, setenforce 0
-    #   9. Mass kill of critical processes
-    #
-    # Each pattern is a plain ERE alternative. No empty alternatives
-    # (GNU/BSD grep both reject them). Top-level system dirs list is kept
-    # in one var so it's easy to audit.
-    local sysdirs='(home|etc|var|usr|bin|sbin|boot|lib|lib32|lib64|opt|root|srv|tmp|dev|proc|sys)'
-    local danger_alts=(
-        # 1a. rm -rf /   (literal root, end-of-string / space / pipe)
-        "rm[[:space:]]+-[a-zA-Z]*[rR][a-zA-Z]*[fF][a-zA-Z]*[[:space:]]+(--[[:space:]]+)?/([[:space:];&|]|\$)"
-        "rm[[:space:]]+-[a-zA-Z]*[fF][a-zA-Z]*[rR][a-zA-Z]*[[:space:]]+(--[[:space:]]+)?/([[:space:];&|]|\$)"
-        # 1b. rm -rf /<sysdir>[...]
-        "rm[[:space:]]+-[a-zA-Z]*[rR][a-zA-Z]*[fF][a-zA-Z]*[[:space:]]+(--[[:space:]]+)?/${sysdirs}([[:space:];&|/]|\$)"
-        "rm[[:space:]]+-[a-zA-Z]*[fF][a-zA-Z]*[rR][a-zA-Z]*[[:space:]]+(--[[:space:]]+)?/${sysdirs}([[:space:];&|/]|\$)"
-        # 2. block-device writes
-        "dd[[:space:]].*of=/dev/(sd|nvme|hd|mmc|vd|loop)"
-        "mkfs\.[a-z0-9]+[[:space:]]+/dev/"
-        "wipefs[[:space:]]+(-[afFq]+[[:space:]]+)?/dev/"
-        "shred[[:space:]].*[[:space:]]/dev/"
-        ">[[:space:]]*/dev/(sd|nvme|hd|mmc|vd)"
-        "blkdiscard[[:space:]]+/dev/"
-        # 3. partition tooling
-        "(s?fdisk|sgdisk|parted)[[:space:]]+(--[[:alpha:]-]+[[:space:]]+)?/dev/"
-        # 4. LUKS destruction
-        "cryptsetup[[:space:]]+(erase|luksRemoveKey|luksKillSlot|luksErase)"
-        # 5. recursive chmod/chown rooted at / or sysdirs
-        "chmod[[:space:]]+-[a-zA-Z]*R[a-zA-Z]*[[:space:]]+[0-9]+[[:space:]]+/([[:space:];&|]|\$)"
-        "chmod[[:space:]]+-[a-zA-Z]*R[a-zA-Z]*[[:space:]]+[0-9]+[[:space:]]+/${sysdirs}([[:space:];&|/]|\$)"
-        "chown[[:space:]]+-[a-zA-Z]*R[a-zA-Z]*[[:space:]]+[^[:space:]]+[[:space:]]+/([[:space:];&|]|\$)"
-        "chown[[:space:]]+-[a-zA-Z]*R[a-zA-Z]*[[:space:]]+[^[:space:]]+[[:space:]]+/${sysdirs}([[:space:];&|/]|\$)"
-        # 6. remote-code-execution via pipe to interpreter
-        "(curl|wget|fetch)[[:space:]][^|]*\\|[[:space:]]*(sudo[[:space:]]+)?(sh|bash|zsh|dash|ksh|fish|python[23]?|perl|ruby|node)([[:space:];&|]|\$)"
-        # 7. fork bomb
-        ":[[:space:]]*\\([[:space:]]*\\)[[:space:]]*\\{"
-        # 8. privilege blast-radius
-        "chmod[[:space:]]+(-[a-zA-Z]+[[:space:]]+)?0?777[[:space:]]+/([[:space:];&|]|\$)"
-        "setenforce[[:space:]]+0"
-        # 9. mass kill of critical processes
-        "(killall|pkill)([[:space:]]+-[a-zA-Z0-9]+)*[[:space:]]+(systemd|init|sshd|NetworkManager|dbus|polkitd)"
-    )
-    # Anchor once at the front of the combined regex.
-    local anchor='(^|[[:space:];&|`(])'
-    local danger_re="${anchor}($(IFS='|'; echo "${danger_alts[*]}"))"
-    if printf '%s' "$cmd" | grep -qE "$danger_re"; then
+    # Safety block: refuse to auto-run obviously destructive commands.
+    # See is_destructive() for the full pattern catalogue.
+    if is_destructive "$cmd"; then
         warn "this looks DESTRUCTIVE — review manually; not offering to run it."
         if need wl-copy; then
             printf '%s' "$cmd" | wl-copy 2>/dev/null && info "copied to clipboard so you can inspect it"
@@ -515,11 +495,242 @@ cmd_cmd() {
     fi
 }
 
+# ──────────────────────────────────────────────────────────────────
+# cmd_agent — iterative approval loop.
+#
+# Given a high-level goal, the model proposes ONE command at a time.
+# The user approves (Enter / y), skips (s), or quits (q). Approved
+# commands run locally and their output (truncated) is fed back into
+# the next turn so the model can reason about what happened.
+#
+# Ends when:
+#   - the model emits a line starting with  DONE   (success),
+#   - or                                    ABORT  (gives up),
+#   - or the user quits (q),
+#   - or MAX_STEPS is reached.
+# ──────────────────────────────────────────────────────────────────
+
+AGENT_MAX_STEPS="${BALAI_AGENT_MAX_STEPS:-10}"
+AGENT_MAX_OUT_BYTES="${BALAI_AGENT_MAX_OUT_BYTES:-2048}"
+
+# Non-streaming ask used by the agent — we want the full reply back as
+# a single string so we can parse DONE/ABORT markers reliably.
+ask_once() {
+    local prompt="$1" keep_alive="${2:-5m}"
+    local payload
+    payload=$(python3 - "$MODEL" "$(load_system_prompt)" "$prompt" "$keep_alive" << 'PY'
+import json, sys
+model, sysp, prompt, keep = sys.argv[1:5]
+payload = {
+    "model": model, "stream": False, "keep_alive": keep,
+    "messages": [
+        {"role": "system", "content": sysp},
+        {"role": "user",   "content": prompt},
+    ],
+    "options": {"temperature": 0.2, "top_p": 0.9, "num_ctx": 4096, "num_predict": 400},
+}
+print(json.dumps(payload))
+PY
+)
+    curl -fsS -N -H 'Content-Type: application/json' -d "$payload" \
+        "${OLLAMA_URL}/api/chat" 2>/dev/null \
+      | python3 -c 'import sys,json
+try: print(json.load(sys.stdin).get("message",{}).get("content","").strip())
+except Exception: pass'
+}
+
+cmd_agent() {
+    [[ $# -eq 0 ]] && die "usage: balai agent \"<high-level goal>\"
+       (agent proposes one command, asks before running, loops until done.)"
+    ensure_ollama
+    ensure_model
+
+    local goal="$*"
+    local step=0
+    local transcript=""
+    local ctx
+    ctx=$(gather_ctx 2>/dev/null)
+
+    echo -e "${M}${B}🤖 BalAI agent mode${N}  ${D}(max ${AGENT_MAX_STEPS} steps)${N}"
+    echo -e "  goal:  ${C}${goal}${N}"
+    echo -e "  rules: Enter=run, s=skip, q=quit   ${D}(Ctrl-C also exits)${N}"
+    echo ""
+
+    # Agent-specific prefix ON TOP of the default system prompt, teaching
+    # the model the turn-taking protocol.
+    local agent_rules="You are now in AGENT MODE — you propose ONE shell command at a time,
+and you WILL see its output before proposing the next one.
+
+Protocol each turn:
+1. Output EXACTLY one \`\`\`bash fenced block with ONE command (no explanations above the block).
+2. Add ONE short line after the block stating what you expect the command to reveal or change.
+3. When the overall goal is complete, output a final message whose FIRST LINE is exactly:
+   DONE: <one-sentence summary of what was accomplished>
+4. If you cannot achieve the goal, reply with a line starting with:
+   ABORT: <one-sentence reason>
+
+Never emit more than ONE fenced block per turn. Never ask the user questions —
+they can only approve or reject what you propose."
+
+    while (( step < AGENT_MAX_STEPS )); do
+        step=$((step + 1))
+        echo -e "${M}${B}── step ${step}/${AGENT_MAX_STEPS} ──${N}"
+
+        local turn_prompt
+        if [[ $step -eq 1 ]]; then
+            turn_prompt="$agent_rules
+
+Current system context:
+$ctx
+
+Goal: $goal
+
+Propose the first command."
+        else
+            turn_prompt="$agent_rules
+
+Current system context:
+$ctx
+
+Goal: $goal
+
+Transcript so far:
+$transcript
+
+Propose the next command, or emit DONE / ABORT."
+        fi
+
+        echo -e "${D}thinking…${N}"
+        local reply
+        reply=$(ask_once "$turn_prompt")
+        if [[ -z "$reply" ]]; then
+            warn "no reply from model — aborting"
+            return 1
+        fi
+
+        # Show the model's message, condensed.
+        echo -e "${D}────────────────${N}"
+        echo "$reply" | head -6
+        echo -e "${D}────────────────${N}"
+
+        # Terminate conditions.
+        if printf '%s' "$reply" | grep -qE '^DONE[: ]'; then
+            ok "$(printf '%s' "$reply" | grep -m1 -E '^DONE[: ]')"
+            return 0
+        fi
+        if printf '%s' "$reply" | grep -qE '^ABORT[: ]'; then
+            warn "$(printf '%s' "$reply" | grep -m1 -E '^ABORT[: ]')"
+            return 1
+        fi
+
+        # Extract proposed command.
+        local cmd
+        cmd=$(extract_command "$reply")
+        if [[ -z "$cmd" ]]; then
+            warn "no command extracted — asking model to retry"
+            transcript+="
+Step $step: model reply had no command block; asked to retry."
+            continue
+        fi
+        cmd="${cmd#$ }"
+        cmd="$(echo "$cmd" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+
+        echo ""
+        echo -e "${M}proposed:${N} ${C}${cmd}${N}"
+
+        # Safety: block destructive commands outright.
+        if is_destructive "$cmd"; then
+            warn "destructive command — refused. Asking model to propose a safer alternative."
+            transcript+="
+Step $step: proposed '$cmd' — REFUSED (matched destructive pattern)."
+            continue
+        fi
+
+        # Approval prompt.
+        echo -ne "${Y}[Enter] run · [s] skip · [q] quit · [e] edit: ${N}"
+        local ans; read -r ans
+        case "$ans" in
+            q|Q|quit|exit)
+                info "agent stopped by user."
+                return 0
+                ;;
+            s|S|skip|n|N|no)
+                transcript+="
+Step $step: proposed '$cmd' — user SKIPPED."
+                continue
+                ;;
+            e|E|edit)
+                echo -ne "${C}edit> ${N}${cmd}"
+                # Naive edit: let user retype
+                local newcmd
+                read -r -e -i "$cmd" newcmd
+                [[ -n "$newcmd" ]] && cmd="$newcmd"
+                ;;
+        esac
+
+        # Run it and capture (head -c for bounded memory).
+        local outfile status
+        outfile=$(mktemp)
+        echo -e "${D}──────── output ────────${N}"
+        set +e
+        bash -c "$cmd" 2>&1 | tee "$outfile"
+        status=${PIPESTATUS[0]}
+        set -e
+        echo -e "${D}────── exit $status ──────${N}"
+
+        # Truncate output for the next turn.
+        local out
+        out=$(head -c "$AGENT_MAX_OUT_BYTES" "$outfile")
+        local trunc=""
+        (( $(wc -c < "$outfile") > AGENT_MAX_OUT_BYTES )) && \
+            trunc=" …[truncated to ${AGENT_MAX_OUT_BYTES} bytes]"
+        rm -f "$outfile"
+
+        transcript+="
+Step $step: ran '$cmd' (exit=$status)${trunc}
+Output:
+$out"
+    done
+
+    warn "max steps reached ($AGENT_MAX_STEPS). Re-run with BALAI_AGENT_MAX_STEPS=N to raise."
+    return 1
+}
+
 cmd_explain() {
     ensure_ollama
     ensure_model
     local target="${1:-}"
     local content
+
+    # --diff A B : semantic diff of two files/outputs. We run `diff -u`
+    # locally (never send whole files) and ask the model to explain
+    # what *really* changed.
+    if [[ "$target" == "--diff" ]]; then
+        local a="${2:-}" b="${3:-}"
+        if [[ -z "$a" || -z "$b" ]]; then
+            die "usage: balai explain --diff <file-a> <file-b>"
+        fi
+        [[ -r "$a" ]] || die "can't read: $a"
+        [[ -r "$b" ]] || die "can't read: $b"
+        local dtmp; dtmp=$(mktemp)
+        diff -u -- "$a" "$b" > "$dtmp"
+        if [[ ! -s "$dtmp" ]]; then
+            rm -f "$dtmp"
+            echo "(files are identical)"; return 0
+        fi
+        local payload
+        payload=$(head -c 6000 "$dtmp")
+        rm -f "$dtmp"
+        stream_chat "Explain this unified diff in plain English. Tell me:
+1. What *actually* changed (ignoring whitespace / reordering),
+2. Any behaviour impact, and
+3. A one-line summary suitable for a commit message.
+
+DIFF:
+${payload}"
+        return
+    fi
+
     # Piped input always wins: `cat err.log | balai explain`
     if [[ ! -t 0 ]]; then
         content=$(head -c 8000)
@@ -764,6 +975,7 @@ ${B}USAGE${N}
   balai                          ${D}# interactive chat${N}
   balai "question"               ${D}# one-shot query${N}
   balai cmd  "<intent>"          ${D}# generate command, confirm, run${N}
+  balai agent "<goal>"           ${D}# iterative loop: propose → approve → run → observe${N}
   balai explain <file|--last>    ${D}# explain file or last command${N}
   balai fix  [error text]        ${D}# diagnose + suggest fix${N}
   balai ctx                      ${D}# show system context balai sees${N}
@@ -798,6 +1010,7 @@ CMD="${1:-}"; shift || true
 case "$CMD" in
     ""|chat|interactive)  cmd_chat ;;
     cmd|do|run|gen)       cmd_cmd "$@" ;;
+    agent|loop|iterate)   cmd_agent "$@" ;;
     explain|exp|why)      cmd_explain "$@" ;;
     fix|err|error)        cmd_fix "$@" ;;
     ctx|context)          cmd_ctx ;;
