@@ -218,7 +218,7 @@ BASE_PKGS=(base base-devel linux-zen linux-zen-headers linux-firmware
     intel-ucode amd-ucode reflector git zsh kitty fastfetch
     snapper snap-pac grub-btrfs inotify-tools
     pipewire pipewire-pulse pipewire-alsa wireplumber
-    nftables tlp auto-cpufreq powertop
+    nftables tlp power-profiles-daemon powertop
     plasma sddm konsole dolphin ark kate firefox
     dnscrypt-proxy usbguard age wireguard-tools
     fzf ripgrep fd bat eza starship
@@ -226,7 +226,7 @@ BASE_PKGS=(base base-devel linux-zen linux-zen-headers linux-firmware
 
 case "$GPU_CHOICE" in
     nvidia) BASE_PKGS+=(nvidia-dkms nvidia-utils nvidia-settings libva-nvidia-driver) ;;
-    amd)    BASE_PKGS+=(mesa vulkan-radeon libva-mesa-driver mesa-vdpau) ;;
+    amd)    BASE_PKGS+=(mesa vulkan-radeon libva-mesa-driver) ;;
     intel)  BASE_PKGS+=(mesa vulkan-intel intel-media-driver) ;;
 esac
 
@@ -304,8 +304,16 @@ mkinitcpio -P
 
 # Bootloader (systemd-boot)
 bootctl install
-ROOT_UUID=\$(blkid -s UUID -o value ${ROOT_DEV})
-LUKS_UUID=\$(blkid -s UUID -o value ${P2})
+ROOT_UUID=\$(blkid -s UUID -o value ${ROOT_DEV} 2>/dev/null)
+LUKS_UUID=\$(blkid -s UUID -o value ${P2} 2>/dev/null)
+if [[ -z "\$ROOT_UUID" ]]; then
+    echo "FATAL: could not read UUID of ${ROOT_DEV}" >&2
+    exit 1
+fi
+if [[ $USE_LUKS -eq 1 && -z "\$LUKS_UUID" ]]; then
+    echo "FATAL: could not read UUID of encrypted container ${P2}" >&2
+    exit 1
+fi
 
 cat > /boot/loader/loader.conf << BOOT
 default balos.conf

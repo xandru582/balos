@@ -54,7 +54,7 @@ systemctl enable sddm
 systemctl enable bluetooth
 systemctl enable tlp
 systemctl enable thermald           2>/dev/null || true
-systemctl enable auto-cpufreq       2>/dev/null || true
+# auto-cpufreq not packaged — tlp + power-profiles-daemon handle this.
 systemctl enable fstrim.timer
 systemctl enable systemd-timesyncd
 systemctl enable reflector.timer    2>/dev/null || true
@@ -71,9 +71,20 @@ systemctl mask systemd-networkd-wait-online.service 2>/dev/null || true
 systemctl mask NetworkManager-wait-online.service   2>/dev/null || true
 
 # ── Make BalOS tools executable ─────────────────────────────────
-chmod +x /usr/bin/bal /usr/bin/balshield /usr/bin/balstealth /usr/bin/balhack \
-         /usr/bin/balboost /usr/bin/balsaver /usr/bin/balmonitor /usr/bin/balpanic \
-         /usr/bin/balinit /usr/bin/balnet /usr/bin/balkernel-build 2>/dev/null || true
+chmod +x /usr/bin/bal* 2>/dev/null || true
+
+# ── Wordlists: stable symlink so balhack / balrecon hints resolve ──
+# seclists ships rockyou under /usr/share/seclists/Passwords/Leaked-Databases/.
+mkdir -p /usr/share/wordlists
+for wl in \
+    "Passwords/Leaked-Databases/rockyou.txt:rockyou.txt" \
+    "Discovery/Web-Content/common.txt:common.txt" \
+    "Discovery/Web-Content/big.txt:big.txt"
+do
+    src="/usr/share/seclists/${wl%%:*}"
+    dst="/usr/share/wordlists/${wl##*:}"
+    [[ -e "$src" ]] && ln -sf "$src" "$dst" 2>/dev/null || true
+done
 
 # ── Place kernel recipe for post-install build ──────────────────
 mkdir -p /usr/share/balos/kernel

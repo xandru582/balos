@@ -49,7 +49,8 @@ ws_recon() {
     tmux new-window -t recon -n "enum4"
     tmux send-keys -t recon:enum4 "echo 'enum4linux -a <target>  |  smbclient -L //<target>/'" C-m
     tmux new-window -t recon -n "netdisc"
-    tmux send-keys -t recon:netdisc "sudo netdiscover -r \$(ip -4 addr show | grep -oP 'inet \K[0-9.]+/\d+' | head -1)" C-m
+    # Prefer arp-scan (Arch extra, always available); fall back to netdiscover if installed.
+    tmux send-keys -t recon:netdisc "if command -v netdiscover >/dev/null; then sudo netdiscover -r \$(ip -4 addr show | grep -oP 'inet \K[0-9.]+/\d+' | head -1); else sudo arp-scan --localnet; fi" C-m
     tmux attach -t recon
 }
 
@@ -114,12 +115,17 @@ ws_forensics() {
 }
 
 ws_crack() {
+    # rockyou.txt ships with the 'seclists' package under /usr/share/seclists/...
+    # We expose a stable symlink at /usr/share/wordlists/rockyou.txt when /etc/skel runs,
+    # but also pass the canonical path as a fallback hint in the message.
+    local rockyou="/usr/share/seclists/Passwords/Leaked-Databases/rockyou.txt"
+    [[ -f /usr/share/wordlists/rockyou.txt ]] && rockyou="/usr/share/wordlists/rockyou.txt"
     tmux new-session -d -s crack -n "john"
-    tmux send-keys -t crack:john "echo 'john --wordlist=/usr/share/wordlists/rockyou.txt hashes.txt'" C-m
+    tmux send-keys -t crack:john "echo 'john --wordlist=${rockyou} hashes.txt'" C-m
     tmux new-window -t crack -n "hashcat"
-    tmux send-keys -t crack:hashcat "echo 'hashcat -m 22000 hash.hc22000 /usr/share/wordlists/rockyou.txt'" C-m
+    tmux send-keys -t crack:hashcat "echo 'hashcat -m 22000 hash.hc22000 ${rockyou}'" C-m
     tmux new-window -t crack -n "hydra"
-    tmux send-keys -t crack:hydra "echo 'hydra -l admin -P rockyou.txt ssh://<target>'" C-m
+    tmux send-keys -t crack:hydra "echo 'hydra -l admin -P ${rockyou} ssh://<target>'" C-m
     tmux attach -t crack
 }
 

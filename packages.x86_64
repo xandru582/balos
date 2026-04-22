@@ -306,6 +306,7 @@ onesixtyone
 amap
 unicornscan
 arp-scan
+netdiscover
 fping
 hping
 mtr

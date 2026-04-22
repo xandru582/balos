@@ -90,10 +90,16 @@ sudo nmap -sV --top-ports 1000 --open -T4 -oA "$OUT/nmap-quick" "$TARGET" | tee 
 # ═══ DEEP NMAP ═════════════════════════════════════════════════
 if $DEEP; then
     step "nmap · all-ports deep scan"
-    OPEN_PORTS=$(grep -oP '^\d+/tcp\s+open' "$OUT/nmap-quick.nmap" | cut -d'/' -f1 | paste -sd,)
-    if [[ -n "$OPEN_PORTS" ]]; then
-        sudo nmap -sV -sC -A -p- --min-rate=5000 -T4 -oA "$OUT/nmap-deep" "$TARGET" | tee -a "$OUT/recon.log"
-        sudo nmap --script vuln -p "$OPEN_PORTS" -oA "$OUT/nmap-vuln" "$TARGET" | tee -a "$OUT/recon.log"
+    if [[ ! -f "$OUT/nmap-quick.nmap" ]]; then
+        log "  ⚠ quick scan produced no output — skipping deep scan"
+    else
+        OPEN_PORTS=$(grep -oP '^\d+/tcp\s+open' "$OUT/nmap-quick.nmap" | cut -d'/' -f1 | paste -sd,)
+        if [[ -n "$OPEN_PORTS" ]]; then
+            sudo nmap -sV -sC -A -p- --min-rate=5000 -T4 -oA "$OUT/nmap-deep" "$TARGET" | tee -a "$OUT/recon.log"
+            sudo nmap --script vuln -p "$OPEN_PORTS" -oA "$OUT/nmap-vuln" "$TARGET" | tee -a "$OUT/recon.log"
+        else
+            log "  (no open ports from quick scan — nothing to probe deeper)"
+        fi
     fi
 fi
 

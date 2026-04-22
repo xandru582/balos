@@ -97,10 +97,19 @@ fi
 # ── 6. BlackArch keyring ──────────────────────────────────────────
 if ! pacman-key --list-keys | grep -q blackarch; then
     if confirm "Install BlackArch keyring (2800+ pentest tools)?"; then
-        curl -O https://blackarch.org/strap.sh
-        chmod +x strap.sh
-        ./strap.sh && rm strap.sh
-        step "BlackArch repo enabled"
+        # Verify strap.sh SHA1 against upstream before executing (published by BlackArch).
+        # If the hash ever changes, review the diff before trusting the new script.
+        STRAP_URL="https://blackarch.org/strap.sh"
+        STRAP_SHA1="$(curl -fsSL https://blackarch.org/strap.sh.sha1sum 2>/dev/null | awk '{print $1}')"
+        if ! curl -fsSLo /tmp/strap.sh "$STRAP_URL"; then
+            echo -e "${R}  ✗ Failed to download strap.sh — skipping BlackArch${N}"
+        elif [[ -n "$STRAP_SHA1" ]] && ! echo "$STRAP_SHA1  /tmp/strap.sh" | sha1sum -c - &>/dev/null; then
+            echo -e "${R}  ✗ strap.sh hash mismatch — aborting (possible MITM)${N}"
+            rm -f /tmp/strap.sh
+        else
+            chmod +x /tmp/strap.sh && /tmp/strap.sh && rm -f /tmp/strap.sh
+            step "BlackArch repo enabled"
+        fi
     fi
 fi
 

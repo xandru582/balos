@@ -64,11 +64,15 @@ stealth_on() {
 
     systemctl start dnscrypt-proxy 2>/dev/null && echo -e "  ${G}✓${N} DNSCrypt-Proxy → DoH"
     resolvectl dns lo 127.0.0.1 2>/dev/null || true
-    # Override /etc/resolv.conf to force DNSCrypt
-    if [[ ! -L /etc/resolv.conf ]] || ! readlink /etc/resolv.conf | grep -q dnscrypt; then
-        echo "nameserver 127.0.0.1" > /etc/resolv.conf
-        echo "options edns0" >> /etc/resolv.conf
+    # Override /etc/resolv.conf to force DNSCrypt.
+    # If it's a symlink managed by systemd-resolved/NM, replace it with a static file.
+    if [[ -L /etc/resolv.conf ]]; then
+        rm -f /etc/resolv.conf
     fi
+    cat > /etc/resolv.conf << 'RESOLV'
+nameserver 127.0.0.1
+options edns0
+RESOLV
 
     systemctl start tor 2>/dev/null && echo -e "  ${G}✓${N} Tor → started"
     sleep 2
