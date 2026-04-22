@@ -27,6 +27,7 @@ _bal() {
         'init:First-boot wizard'
         'kernel:Build BalKernel'
         'ai:Local offline LLM assistant'
+        'chat:BalAI chat GUI (Qt window)'
         'ids:Suricata intrusion detection'
         'help:Show usage'
         'version:Show version'

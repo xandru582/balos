@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">
+  <!-- Dark circular background -->
+  <defs>
+    <radialGradient id="bg" cx="0.3" cy="0.25" r="0.9">
+      <stop offset="0%"  stop-color="#1f1733"/>
+      <stop offset="60%" stop-color="#0d0d14"/>
+      <stop offset="100%" stop-color="#05050a"/>
+    </radialGradient>
+    <linearGradient id="glow" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%"  stop-color="#a855f7"/>
+      <stop offset="100%" stop-color="#22d3ee"/>
+    </linearGradient>
+    <filter id="soft" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="1.2"/>
+    </filter>
+  </defs>
+
+  <circle cx="64" cy="64" r="60" fill="url(#bg)" stroke="#2a2540" stroke-width="2"/>
+
+  <!-- Brain hemispheres: two stylized lobes forming a "B" silhouette -->
+  <g stroke="url(#glow)" stroke-width="3.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <!-- left hemisphere -->
+    <path d="M44 38
+             C32 38, 26 48, 30 58
+             C22 62, 22 76, 32 82
+             C30 94, 44 100, 56 94
+             L56 38
+             C52 36, 48 36, 44 38 Z"/>
+    <!-- right hemisphere -->
+    <path d="M72 38
+             C84 38, 90 48, 86 58
+             C94 62, 94 76, 84 82
+             C86 94, 72 100, 60 94
+             L60 38
+             C64 36, 68 36, 72 38 Z"/>
+    <!-- neural crease lines (left) -->
+    <path d="M38 52 C42 54, 46 54, 50 52" opacity="0.7"/>
+    <path d="M34 66 C40 68, 48 68, 54 64" opacity="0.7"/>
+    <path d="M38 80 C44 82, 50 82, 54 80" opacity="0.7"/>
+    <!-- neural crease lines (right) -->
+    <path d="M78 52 C74 54, 70 54, 66 52" opacity="0.7"/>
+    <path d="M82 66 C76 68, 68 68, 62 64" opacity="0.7"/>
+    <path d="M78 80 C72 82, 66 82, 62 80" opacity="0.7"/>
+  </g>
+
+  <!-- Synapse dots -->
+  <g fill="#22d3ee">
+    <circle cx="44" cy="52" r="1.8"/>
+    <circle cx="82" cy="52" r="1.8"/>
+    <circle cx="40" cy="76" r="1.8"/>
+    <circle cx="86" cy="76" r="1.8"/>
+  </g>
+  <g fill="#a855f7">
+    <circle cx="58" cy="48" r="2.2"/>
+    <circle cx="62" cy="86" r="2.2"/>
+  </g>
+
+  <!-- Accent dot for the chat / speech aspect -->
+  <g filter="url(#soft)">
+    <circle cx="98" cy="96" r="10" fill="#a855f7" opacity="0.9"/>
+  </g>
+  <circle cx="98" cy="96" r="6.5" fill="#0d0d14" stroke="#e9d5ff" stroke-width="1.4"/>
+  <g fill="#e9d5ff">
+    <circle cx="94.5" cy="96" r="1.2"/>
+    <circle cx="98"   cy="96" r="1.2"/>
+    <circle cx="101.5" cy="96" r="1.2"/>
+  </g>
+</svg>

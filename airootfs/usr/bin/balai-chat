@@ -1,0 +1,976 @@
+#!/usr/bin/env python3
+# balai-chat — graphical front-end for BalAI.
+#
+# A friendly Qt6 chat window around the local Qwen2.5-1.5B model served by
+# the ollama daemon at 127.0.0.1:11434. Streams tokens as they arrive, shows
+# a live system dashboard on the left (battery, CPU, RAM, net, firewall,
+# VPN, power profile), and exposes one-click shortcuts to the most useful
+# balai subcommands (doctor, tip, ctx, remember).
+#
+# Zero cloud. Everything runs on this machine.
+# Depends on: pyside6, python-requests, ollama, balai (which ships the model).
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+try:
+    import requests  # noqa: F401 (imported lazily below for the status ping)
+except Exception:  # pragma: no cover — on BalOS this is a hard dep
+    requests = None
+
+from PySide6.QtCore import (
+    Qt, QTimer, QThread, Signal, Slot, QSize,
+)
+from PySide6.QtGui import (
+    QAction, QFont, QFontDatabase, QIcon, QKeySequence, QPalette, QColor,
+    QTextCursor, QShortcut,
+)
+from PySide6.QtWidgets import (
+    QApplication, QHBoxLayout, QVBoxLayout, QWidget, QPushButton, QLabel,
+    QTextEdit, QPlainTextEdit, QSizePolicy, QFrame, QScrollArea, QMainWindow,
+    QInputDialog, QMessageBox, QMenu, QStatusBar, QSplitter,
+)
+
+# ─── theme ──────────────────────────────────────────────────────────
+BG        = "#0d0d10"   # near-black (Matrix / BalOS dark)
+PANEL     = "#16161c"
+PANEL_ALT = "#1c1c24"
+FG        = "#e7e7ea"
+MUTED     = "#8a8a94"
+ACCENT    = "#a855f7"   # magenta/violet (BalOS brand)
+ACCENT_2  = "#22d3ee"   # cyan for user bubbles
+OK        = "#22c55e"
+WARN      = "#f59e0b"
+BAD       = "#ef4444"
+
+OLLAMA_URL   = os.environ.get("OLLAMA_HOST_URL") or \
+               f"http://{os.environ.get('OLLAMA_HOST', '127.0.0.1:11434')}"
+MODEL        = os.environ.get("BALAI_MODEL", "qwen2.5:1.5b-instruct-q4_K_M")
+SYSTEM_PROMPT_FILE = Path(os.environ.get(
+    "BALAI_SYSTEM_PROMPT",
+    "/usr/share/balos/ai/system-prompt.md"
+))
+NOTES_FILE = Path(os.environ.get(
+    "BALAI_NOTES_FILE",
+    os.path.expanduser("~/.local/state/balai/notes.md"),
+))
+
+# ─── small helpers: read system state ──────────────────────────────
+
+def _read(path: str) -> str:
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def _sh(cmd: list[str], timeout: float = 2.0) -> str:
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return (r.stdout or "").strip()
+    except Exception:
+        return ""
+
+
+def _battery() -> tuple[str, str]:
+    """Return (percent, state) or ('', '')."""
+    for bat in sorted(Path("/sys/class/power_supply").glob("BAT*")):
+        cap = _read(str(bat / "capacity"))
+        st  = _read(str(bat / "status"))
+        if cap:
+            return f"{cap}%", st or ""
+    return "", ""
+
+
+def _ac() -> bool:
+    for ac in sorted(Path("/sys/class/power_supply").glob("A[CD]*")):
+        if _read(str(ac / "online")) == "1":
+            return True
+    # Laptops often expose "AC", desktops have no battery so assume plugged.
+    if not any(Path("/sys/class/power_supply").glob("BAT*")):
+        return True
+    return False
+
+
+def _cpu_load() -> str:
+    try:
+        one, _, _ = os.getloadavg()
+        return f"{one:.2f}"
+    except OSError:
+        return "?"
+
+
+def _cpu_freq_mhz() -> str:
+    v = _read("/proc/cpuinfo")
+    for line in v.splitlines():
+        if line.lower().startswith("cpu mhz"):
+            try:
+                return f"{int(float(line.split(':')[1].strip()))} MHz"
+            except Exception:
+                break
+    return ""
+
+
+def _governor() -> str:
+    return _read("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor") or "?"
+
+
+def _mem() -> str:
+    try:
+        total = free = avail = 0
+        with open("/proc/meminfo") as f:
+            for line in f:
+                k, _, rest = line.partition(":")
+                parts = rest.strip().split()
+                if not parts:
+                    continue
+                try:
+                    val = int(parts[0])
+                except ValueError:
+                    continue
+                if k == "MemTotal":
+                    total = val
+                elif k == "MemFree":
+                    free = val
+                elif k == "MemAvailable":
+                    avail = val
+        if total:
+            used_gb = (total - (avail or free)) / 1_048_576
+            total_gb = total / 1_048_576
+            return f"{used_gb:.1f} / {total_gb:.1f} GB"
+    except OSError:
+        pass
+    return "?"
+
+
+def _disk_root() -> str:
+    try:
+        s = os.statvfs("/")
+        used = (s.f_blocks - s.f_bfree) * s.f_frsize / 1_073_741_824
+        total = s.f_blocks * s.f_frsize / 1_073_741_824
+        return f"{used:.0f} / {total:.0f} GB"
+    except OSError:
+        return "?"
+
+
+def _uptime() -> str:
+    try:
+        with open("/proc/uptime") as f:
+            secs = float(f.read().split()[0])
+        d, rem = divmod(int(secs), 86400)
+        h, rem = divmod(rem, 3600)
+        m, _   = divmod(rem, 60)
+        if d:  return f"{d}d {h}h {m}m"
+        if h:  return f"{h}h {m}m"
+        return f"{m}m"
+    except OSError:
+        return "?"
+
+
+def _kernel() -> str:
+    return _read("/proc/sys/kernel/osrelease") or "?"
+
+
+def _iface_and_ip() -> tuple[str, str]:
+    """Best-effort: first non-loopback iface with a carrier + v4 IP."""
+    for iface in sorted(Path("/sys/class/net").iterdir(), key=lambda p: p.name):
+        if iface.name == "lo":
+            continue
+        if _read(str(iface / "operstate")) != "up":
+            continue
+        ip = _sh(["ip", "-4", "-br", "addr", "show", "dev", iface.name]).split()
+        if len(ip) >= 3:
+            return iface.name, ip[2].split("/")[0]
+    return "", ""
+
+
+def _wifi_ssid() -> str:
+    out = _sh(["iwgetid", "-r"]) or _sh(["iw", "dev"])
+    if out and "SSID" not in out:
+        return out.split("\n")[0].strip()
+    return ""
+
+
+def _vpn_state() -> str:
+    # WireGuard via wg-quick (@wg0 is BalOS default)
+    wg = _sh(["wg", "show", "wg0", "transfer"])
+    if wg:
+        return "wg0 ↑"
+    # NetworkManager VPN connection
+    nm = _sh(["nmcli", "-t", "-f", "TYPE,STATE,NAME", "con", "show", "--active"])
+    for line in nm.splitlines():
+        if line.startswith("vpn:") or "wireguard" in line:
+            parts = line.split(":")
+            if len(parts) >= 3 and parts[1] == "activated":
+                return parts[2] + " ↑"
+    return "off"
+
+
+def _shield_tier() -> str:
+    return _read("/run/balos/shield-tier") or "?"
+
+
+def _power_profile() -> str:
+    v = _read("/run/balos/power-profile")
+    if v:
+        return v.replace(":", " ")
+    return "balance"
+
+
+# ─── model client — streaming generator ─────────────────────────────
+
+class AIThread(QThread):
+    """Streams ollama tokens back to the UI.
+
+    Emits:
+      chunk(str)   — incremental token text
+      done(str)    — final full assistant response (also used to snapshot history)
+      error(str)   — fatal error message
+    """
+    chunk = Signal(str)
+    done  = Signal(str)
+    error = Signal(str)
+
+    def __init__(self, prompt: str, history: list[dict], parent=None):
+        super().__init__(parent)
+        self._prompt = prompt
+        self._history = history  # list of {"role": "...", "content": "..."}
+        self._stop = False
+
+    def stop(self):
+        self._stop = True
+
+    def run(self):
+        try:
+            import requests  # noqa: redefine for thread-local import safety
+        except ImportError:
+            self.error.emit("python-requests is not installed")
+            return
+
+        sys_prompt = ""
+        if SYSTEM_PROMPT_FILE.exists():
+            try:
+                sys_prompt = SYSTEM_PROMPT_FILE.read_text()[:12000]
+            except OSError:
+                pass
+        notes = ""
+        if NOTES_FILE.exists():
+            try:
+                notes = NOTES_FILE.read_text()[:2048]
+            except OSError:
+                pass
+        if notes:
+            sys_prompt = (sys_prompt + "\n\nUser preferences and notes "
+                          "(remember these):\n" + notes)
+
+        # Build Ollama /api/chat payload.
+        messages = []
+        if sys_prompt:
+            messages.append({"role": "system", "content": sys_prompt})
+        messages.extend(self._history)
+        messages.append({"role": "user", "content": self._prompt})
+
+        try:
+            resp = requests.post(
+                f"{OLLAMA_URL}/api/chat",
+                json={
+                    "model": MODEL,
+                    "messages": messages,
+                    "stream": True,
+                    "options": {
+                        "temperature": 0.2,
+                        "top_p": 0.9,
+                        "num_predict": 512,
+                    },
+                },
+                stream=True,
+                timeout=(5, 180),
+            )
+            resp.raise_for_status()
+        except Exception as e:
+            self.error.emit(f"ollama unreachable: {e}")
+            return
+
+        full: list[str] = []
+        for raw in resp.iter_lines(decode_unicode=True):
+            if self._stop:
+                break
+            if not raw:
+                continue
+            try:
+                obj = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            piece = obj.get("message", {}).get("content", "")
+            if piece:
+                full.append(piece)
+                self.chunk.emit(piece)
+            if obj.get("done"):
+                break
+        self.done.emit("".join(full))
+
+
+# ─── UI ─────────────────────────────────────────────────────────────
+
+STYLESHEET = f"""
+QWidget {{
+    background: {BG};
+    color: {FG};
+    font-family: 'Inter', 'Cantarell', 'Noto Sans', sans-serif;
+    font-size: 13px;
+}}
+QFrame#sidebar {{
+    background: {PANEL};
+    border-right: 1px solid #26262e;
+}}
+QLabel#brand {{
+    color: {ACCENT};
+    font-size: 16px;
+    font-weight: 700;
+    padding: 12px 16px 8px 16px;
+}}
+QLabel#brand_sub {{
+    color: {MUTED};
+    padding: 0 16px 12px 16px;
+    font-size: 11px;
+}}
+QLabel.kv_k {{
+    color: {MUTED};
+    font-size: 11px;
+    padding-left: 16px;
+}}
+QLabel.kv_v {{
+    color: {FG};
+    padding-right: 16px;
+    font-family: 'JetBrainsMono Nerd Font', 'JetBrains Mono', 'Fira Code', monospace;
+}}
+QLabel.kv_v_ok   {{ color: {OK};  font-weight: 600; }}
+QLabel.kv_v_warn {{ color: {WARN}; font-weight: 600; }}
+QLabel.kv_v_bad  {{ color: {BAD};  font-weight: 600; }}
+QTextEdit#chat_view {{
+    background: {BG};
+    border: none;
+    padding: 10px 16px;
+    selection-background-color: {ACCENT};
+}}
+QPlainTextEdit#chat_input {{
+    background: {PANEL_ALT};
+    border: 1px solid #2e2e38;
+    border-radius: 10px;
+    padding: 10px 14px;
+    color: {FG};
+    font-size: 14px;
+}}
+QPlainTextEdit#chat_input:focus {{
+    border: 1px solid {ACCENT};
+}}
+QPushButton {{
+    background: {PANEL_ALT};
+    border: 1px solid #2e2e38;
+    border-radius: 8px;
+    padding: 6px 14px;
+    color: {FG};
+}}
+QPushButton:hover {{ background: #272733; border-color: {ACCENT}; }}
+QPushButton:pressed {{ background: {ACCENT}; color: #fff; }}
+QPushButton#send {{
+    background: {ACCENT};
+    color: #fff;
+    border: none;
+    font-weight: 600;
+}}
+QPushButton#send:hover {{ background: #8c3de0; }}
+QPushButton#send:disabled {{ background: #3a3347; color: #888; }}
+QStatusBar {{ background: {PANEL}; color: {MUTED}; }}
+"""
+
+
+def _kv(parent_layout: QVBoxLayout, key: str, value: str, cls: str = "") -> QLabel:
+    row = QHBoxLayout()
+    row.setContentsMargins(0, 2, 0, 2)
+    k = QLabel(key)
+    k.setObjectName(key)
+    k.setProperty("class", "kv_k")
+    k.setStyleSheet(f"color: {MUTED}; font-size: 11px; padding-left: 16px;")
+    v = QLabel(value)
+    v.setProperty("class", f"kv_v {cls}" if cls else "kv_v")
+    v.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+    v.setStyleSheet(f"color: {FG}; padding-right: 16px;"
+                    "font-family: 'JetBrainsMono Nerd Font','JetBrains Mono',"
+                    "'Fira Code',monospace;")
+    row.addWidget(k)
+    row.addStretch(1)
+    row.addWidget(v)
+    parent_layout.addLayout(row)
+    return v
+
+
+class Sidebar(QFrame):
+    """Live system dashboard. Polls every 5 s."""
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("sidebar")
+        self.setFixedWidth(280)
+        self.setFrameShape(QFrame.NoFrame)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 10)
+        root.setSpacing(0)
+
+        brand = QLabel("🧠  BalAI")
+        brand.setObjectName("brand")
+        root.addWidget(brand)
+        sub = QLabel(f"offline · {MODEL}")
+        sub.setObjectName("brand_sub")
+        root.addWidget(sub)
+
+        # ── status groups ─────────────────────────────────────────
+        self._labels: dict[str, QLabel] = {}
+
+        self._section(root, "POWER")
+        self._labels["battery"]    = _kv(root, "battery",    "—")
+        self._labels["profile"]    = _kv(root, "profile",    "—")
+        self._labels["governor"]   = _kv(root, "governor",   "—")
+
+        self._section(root, "SYSTEM")
+        self._labels["load"]       = _kv(root, "load 1m",    "—")
+        self._labels["mem"]        = _kv(root, "memory",     "—")
+        self._labels["disk"]       = _kv(root, "disk /",     "—")
+        self._labels["uptime"]     = _kv(root, "uptime",     "—")
+        self._labels["kernel"]     = _kv(root, "kernel",     "—")
+
+        self._section(root, "NETWORK")
+        self._labels["iface"]      = _kv(root, "iface",      "—")
+        self._labels["ip"]         = _kv(root, "ip",         "—")
+        self._labels["ssid"]       = _kv(root, "wifi",       "—")
+        self._labels["vpn"]        = _kv(root, "vpn",        "—")
+        self._labels["shield"]     = _kv(root, "firewall",   "—")
+
+        root.addStretch(1)
+
+        # Footer mini-help
+        help_lbl = QLabel(
+            "⌘/Ctrl+Enter  send\n"
+            "Ctrl+L        clear\n"
+            "Ctrl+D        doctor\n"
+            "Ctrl+T        tip"
+        )
+        help_lbl.setStyleSheet(f"color: {MUTED}; padding: 8px 16px; font-size: 10px;")
+        root.addWidget(help_lbl)
+
+        # Poll loop
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self.refresh)
+        self._timer.start(5000)
+        self.refresh()
+
+    def _section(self, layout: QVBoxLayout, title: str):
+        spacer = QLabel(title)
+        spacer.setStyleSheet(
+            f"color: {ACCENT}; font-size: 10px; font-weight: 700; "
+            "letter-spacing: 1.5px; padding: 14px 16px 4px 16px;"
+        )
+        layout.addWidget(spacer)
+
+    def _set(self, key: str, value: str, level: str = ""):
+        lbl = self._labels.get(key)
+        if not lbl:
+            return
+        lbl.setText(value)
+        color = {"ok": OK, "warn": WARN, "bad": BAD}.get(level, FG)
+        lbl.setStyleSheet(f"color: {color}; padding-right: 16px;"
+                          "font-family: 'JetBrainsMono Nerd Font',"
+                          "'JetBrains Mono','Fira Code',monospace;")
+
+    @Slot()
+    def refresh(self):
+        cap, st = _battery()
+        if cap:
+            n = int(cap.rstrip("%"))
+            level = "bad" if (n < 15 and "Dis" in st) else \
+                    "warn" if (n < 30 and "Dis" in st) else "ok"
+            self._set("battery", f"{cap} {st}".strip(), level)
+        else:
+            self._set("battery", "AC" if _ac() else "?")
+
+        self._set("profile",  _power_profile())
+        self._set("governor", _governor())
+
+        load = _cpu_load()
+        try:
+            load_f = float(load)
+            ncpu   = os.cpu_count() or 1
+            lvl    = "bad" if load_f > ncpu else "warn" if load_f > ncpu * 0.6 else "ok"
+        except ValueError:
+            lvl = ""
+        self._set("load", load, lvl)
+        self._set("mem", _mem())
+        self._set("disk", _disk_root())
+        self._set("uptime", _uptime())
+        self._set("kernel", _kernel().split("-")[0])
+
+        iface, ip = _iface_and_ip()
+        self._set("iface", iface or "none", "ok" if iface else "warn")
+        self._set("ip", ip or "—")
+        self._set("ssid", _wifi_ssid() or "—")
+
+        vpn = _vpn_state()
+        self._set("vpn", vpn, "ok" if vpn != "off" else "")
+
+        tier = _shield_tier()
+        tier_lvl = {"off": "warn", "normal": "ok", "armor": "ok",
+                    "fortress": "ok"}.get(tier, "")
+        self._set("shield", tier, tier_lvl)
+
+
+# ─── Chat view ──────────────────────────────────────────────────────
+
+class ChatView(QTextEdit):
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("chat_view")
+        self.setReadOnly(True)
+        self.setFrameShape(QFrame.NoFrame)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.document().setDefaultStyleSheet(f"""
+            body {{ color: {FG}; font-size: 13px; line-height: 1.5; }}
+            .meta {{ color: {MUTED}; font-size: 10px; margin-top: 14px; }}
+            .user {{ color: {ACCENT_2}; font-weight: 600; }}
+            .ai   {{ color: {ACCENT};  font-weight: 600; }}
+            pre {{ background: {PANEL}; padding: 10px 14px;
+                   border-left: 3px solid {ACCENT}; font-family: monospace;
+                   white-space: pre-wrap; margin: 6px 0; border-radius: 4px; }}
+            code {{ background: {PANEL}; padding: 1px 5px; border-radius: 3px;
+                    font-family: monospace; color: #f9a8d4; }}
+            blockquote {{ border-left: 2px solid {MUTED}; color: {MUTED};
+                          margin: 4px 0; padding-left: 10px; }}
+        """)
+        self._append_html(
+            "<p class='meta'>BalAI — local offline assistant. "
+            "100% on this device.</p>"
+            "<p>👋 Hi. Ask me anything about your BalOS system, security, "
+            "networking, or command-line chores. I can already see your current "
+            "state on the left.</p>"
+        )
+
+    def _append_html(self, html: str):
+        self.moveCursor(QTextCursor.End)
+        self.insertHtml(html)
+        self.moveCursor(QTextCursor.End)
+        self.ensureCursorVisible()
+
+    def add_user(self, text: str):
+        safe = _html_escape(text).replace("\n", "<br>")
+        self._append_html(
+            f"<p class='meta'><span class='user'>you</span></p>"
+            f"<p>{safe}</p>"
+        )
+
+    def start_ai(self):
+        self._ai_buf: list[str] = []
+        self._append_html("<p class='meta'><span class='ai'>balai</span></p>")
+        self._append_html("<p id='ai_current'>")
+
+    def append_ai_chunk(self, text: str):
+        self._ai_buf.append(text)
+        # Render incrementally as plain text with newline preservation. We
+        # re-render the markdown once the stream finishes.
+        self.moveCursor(QTextCursor.End)
+        self.insertPlainText(text)
+        self.moveCursor(QTextCursor.End)
+        self.ensureCursorVisible()
+
+    def finish_ai(self) -> str:
+        full = "".join(getattr(self, "_ai_buf", []))
+        # Replace the streamed plain text with rich markdown render.
+        if full:
+            # find and delete the current plain block then inject html
+            # (simple approach: append a horizontal rule + rich version below
+            #  would feel janky; instead, rewrite via selection).
+            rendered = _md_to_html(full)
+            # Remove the plain text we streamed by walking back N chars.
+            cursor = self.textCursor()
+            cursor.movePosition(QTextCursor.End)
+            cursor.movePosition(QTextCursor.Left,
+                                QTextCursor.KeepAnchor, len(full))
+            cursor.removeSelectedText()
+            self._append_html(rendered)
+        self._append_html("<p></p>")
+        return full
+
+    def add_system(self, text: str, kind: str = "note"):
+        color = {"note": MUTED, "warn": WARN, "err": BAD}.get(kind, MUTED)
+        safe = _html_escape(text).replace("\n", "<br>")
+        self._append_html(
+            f"<p style='color:{color};font-size:11px;margin-top:6px;'>"
+            f"▸ {safe}</p>"
+        )
+
+
+def _html_escape(s: str) -> str:
+    return (s.replace("&", "&amp;").replace("<", "&lt;")
+             .replace(">", "&gt;").replace('"', "&quot;"))
+
+
+_BULLET_RE = re.compile(r"^\s*[-*]\s+", re.MULTILINE)
+
+
+def _md_to_html(md: str) -> str:
+    """Very small markdown → HTML. Covers: fenced code, inline code, bullets,
+    bold/italic, and line breaks. We intentionally avoid a full MD lib to
+    keep the dependency footprint tiny."""
+    out = []
+    i = 0
+    lines = md.splitlines()
+    while i < len(lines):
+        line = lines[i]
+        m = re.match(r"^```(\w+)?\s*$", line.strip())
+        if m:
+            i += 1
+            buf = []
+            while i < len(lines) and not lines[i].strip().startswith("```"):
+                buf.append(lines[i])
+                i += 1
+            code = _html_escape("\n".join(buf))
+            out.append(f"<pre><code>{code}</code></pre>")
+            i += 1
+            continue
+        if _BULLET_RE.match(line):
+            items = []
+            while i < len(lines) and _BULLET_RE.match(lines[i]):
+                txt = _BULLET_RE.sub("", lines[i])
+                items.append("<li>" + _inline_md(_html_escape(txt)) + "</li>")
+                i += 1
+            out.append("<ul style='margin:4px 0 4px 18px;'>"
+                       + "".join(items) + "</ul>")
+            continue
+        if not line.strip():
+            out.append("")
+            i += 1
+            continue
+        out.append("<p style='margin:4px 0;'>"
+                   + _inline_md(_html_escape(line)) + "</p>")
+        i += 1
+    return "\n".join(out)
+
+
+def _inline_md(s: str) -> str:
+    s = re.sub(r"`([^`]+)`", r"<code>\1</code>", s)
+    s = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", s)
+    s = re.sub(r"(?<!\*)\*([^*]+)\*(?!\*)", r"<i>\1</i>", s)
+    return s
+
+
+# ─── Main window ────────────────────────────────────────────────────
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("BalAI — offline assistant")
+        self.resize(1100, 720)
+        self.setMinimumSize(820, 520)
+        self.setStyleSheet(STYLESHEET)
+
+        # Icon (fallbacks gracefully if not installed)
+        for candidate in ("/usr/share/icons/hicolor/scalable/apps/balai.svg",
+                          "/usr/share/pixmaps/balai.svg",
+                          "/usr/share/pixmaps/balai.png"):
+            if Path(candidate).is_file():
+                self.setWindowIcon(QIcon(candidate))
+                break
+
+        root = QWidget()
+        self.setCentralWidget(root)
+        hroot = QHBoxLayout(root)
+        hroot.setContentsMargins(0, 0, 0, 0)
+        hroot.setSpacing(0)
+
+        self.sidebar = Sidebar()
+        hroot.addWidget(self.sidebar)
+
+        # Right pane: chat + toolbar + input
+        right = QWidget()
+        rv = QVBoxLayout(right)
+        rv.setContentsMargins(0, 0, 0, 0)
+        rv.setSpacing(0)
+
+        # Toolbar row with quick actions
+        tb = QHBoxLayout()
+        tb.setContentsMargins(12, 10, 12, 10)
+        tb.setSpacing(8)
+        for label, slot, tip in (
+            ("🩺 Doctor",   self._do_doctor,   "System health + AI verdict"),
+            ("💡 Tip",      self._do_tip,      "One-line proactive suggestion"),
+            ("🧭 Context",  self._do_context,  "Show current system snapshot"),
+            ("🧾 Remember", self._do_remember, "Add a persistent note"),
+            ("🧹 Clear",    self._do_clear,    "Clear this conversation"),
+        ):
+            b = QPushButton(label)
+            b.setToolTip(tip)
+            b.clicked.connect(slot)
+            tb.addWidget(b)
+        tb.addStretch(1)
+        self._stop_btn = QPushButton("■ Stop")
+        self._stop_btn.setToolTip("Interrupt current response")
+        self._stop_btn.setEnabled(False)
+        self._stop_btn.clicked.connect(self._stop_stream)
+        tb.addWidget(self._stop_btn)
+        rv.addLayout(tb)
+
+        self.chat = ChatView()
+        rv.addWidget(self.chat, 1)
+
+        # Input row
+        inp_row = QHBoxLayout()
+        inp_row.setContentsMargins(12, 0, 12, 12)
+        inp_row.setSpacing(8)
+        self.input = QPlainTextEdit()
+        self.input.setObjectName("chat_input")
+        self.input.setPlaceholderText("Ask BalAI…  (Enter to send, Shift+Enter for newline)")
+        self.input.setFixedHeight(70)
+        self.input.installEventFilter(self)
+        inp_row.addWidget(self.input, 1)
+
+        self.send_btn = QPushButton("Send  ↵")
+        self.send_btn.setObjectName("send")
+        self.send_btn.setFixedHeight(70)
+        self.send_btn.setMinimumWidth(110)
+        self.send_btn.clicked.connect(self._on_send)
+        inp_row.addWidget(self.send_btn)
+        rv.addLayout(inp_row)
+
+        hroot.addWidget(right, 1)
+
+        # Status bar shows ollama reachability + active model.
+        sb = QStatusBar()
+        self.setStatusBar(sb)
+        self._sb_status = QLabel("checking ollama…")
+        sb.addWidget(self._sb_status)
+        self._sb_model = QLabel(f"model: {MODEL}")
+        sb.addPermanentWidget(self._sb_model)
+
+        # Shortcuts
+        QShortcut(QKeySequence("Ctrl+L"), self, activated=self._do_clear)
+        QShortcut(QKeySequence("Ctrl+D"), self, activated=self._do_doctor)
+        QShortcut(QKeySequence("Ctrl+T"), self, activated=self._do_tip)
+        QShortcut(QKeySequence("Ctrl+K"), self, activated=self._do_context)
+        QShortcut(QKeySequence("Ctrl+Q"), self, activated=self.close)
+
+        # Chat history for proper multi-turn (excluding system prompt).
+        self.history: list[dict] = []
+        self._thread: AIThread | None = None
+
+        # Kick an initial ollama ping.
+        QTimer.singleShot(200, self._ping_ollama)
+        self._ping_timer = QTimer(self)
+        self._ping_timer.timeout.connect(self._ping_ollama)
+        self._ping_timer.start(15_000)
+
+    # ── event filter: Enter submits, Shift+Enter = newline ────────
+
+    def eventFilter(self, obj, ev):
+        from PySide6.QtCore import QEvent
+        if obj is self.input and ev.type() == QEvent.KeyPress:
+            if ev.key() in (Qt.Key_Return, Qt.Key_Enter):
+                # Shift/Ctrl+Enter inserts a newline; bare Enter sends.
+                if ev.modifiers() & (Qt.ShiftModifier | Qt.ControlModifier):
+                    return False
+                self._on_send()
+                return True
+        return super().eventFilter(obj, ev)
+
+    # ── quick actions ─────────────────────────────────────────────
+
+    def _do_clear(self):
+        self.chat.clear()
+        self.history.clear()
+        self.chat.add_system("conversation cleared")
+
+    def _do_doctor(self):
+        self._run_cli(["balai", "doctor"], header="🩺 system doctor")
+
+    def _do_tip(self):
+        self._run_cli(["balai", "tip"], header="💡 tip")
+
+    def _do_context(self):
+        self._run_cli(["balai", "ctx"], header="🧭 current context", render=False)
+
+    def _do_remember(self):
+        text, ok = QInputDialog.getText(
+            self, "Remember this",
+            "Add a note BalAI will keep in mind across sessions:"
+        )
+        if ok and text.strip():
+            try:
+                NOTES_FILE.parent.mkdir(parents=True, exist_ok=True)
+                with NOTES_FILE.open("a") as f:
+                    f.write(f"- {text.strip()}\n")
+                self.chat.add_system(f"remembered: {text.strip()}")
+            except OSError as e:
+                self.chat.add_system(f"could not save note: {e}", "err")
+
+    # ── sending messages ─────────────────────────────────────────
+
+    def _on_send(self):
+        if self._thread and self._thread.isRunning():
+            return
+        text = self.input.toPlainText().strip()
+        if not text:
+            return
+        self.input.clear()
+        self._send(text)
+
+    def _send(self, prompt: str):
+        # Context injection: if prompt looks like "my / current / what's…",
+        # prepend a live snapshot so the 1.5B model doesn't hallucinate.
+        effective = prompt
+        if _needs_ctx(prompt):
+            effective = (
+                "Current BalOS system state:\n"
+                f"{_inline_ctx()}\n"
+                f"User question: {prompt}"
+            )
+
+        self.chat.add_user(prompt)
+        self.history.append({"role": "user", "content": effective})
+        self.chat.start_ai()
+
+        self.send_btn.setEnabled(False)
+        self._stop_btn.setEnabled(True)
+
+        self._thread = AIThread(effective,
+                                history=self.history[:-1])  # exclude current user msg
+        self._thread.chunk.connect(self.chat.append_ai_chunk)
+        self._thread.done.connect(self._on_done)
+        self._thread.error.connect(self._on_error)
+        self._thread.start()
+
+    def _stop_stream(self):
+        if self._thread and self._thread.isRunning():
+            self._thread.stop()
+            self.chat.add_system("stopped")
+
+    @Slot(str)
+    def _on_done(self, full: str):
+        rendered = self.chat.finish_ai()
+        self.history.append({"role": "assistant", "content": full or rendered})
+        self.send_btn.setEnabled(True)
+        self._stop_btn.setEnabled(False)
+
+    @Slot(str)
+    def _on_error(self, msg: str):
+        self.chat.finish_ai()
+        self.chat.add_system(msg, "err")
+        self.send_btn.setEnabled(True)
+        self._stop_btn.setEnabled(False)
+
+    # ── run an external balai subcommand and render its output ──
+
+    def _run_cli(self, cmd: list[str], header: str, render: bool = True):
+        if not shutil.which(cmd[0]):
+            self.chat.add_system(f"{cmd[0]} not found", "err")
+            return
+        self.chat.add_system(header)
+        try:
+            out = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=120,
+            ).stdout.strip()
+        except subprocess.TimeoutExpired:
+            self.chat.add_system(f"{' '.join(cmd)} timed out", "warn")
+            return
+        if not out:
+            self.chat.add_system("(no output)")
+            return
+        if render:
+            self.chat._append_html(_md_to_html(out))
+        else:
+            self.chat._append_html(f"<pre>{_html_escape(out)}</pre>")
+
+    # ── ollama reachability indicator ────────────────────────────
+
+    def _ping_ollama(self):
+        reachable = False
+        try:
+            import requests
+            r = requests.get(f"{OLLAMA_URL}/api/tags", timeout=1.5)
+            reachable = r.ok
+        except Exception:
+            reachable = False
+        if reachable:
+            self._sb_status.setText("● ollama connected")
+            self._sb_status.setStyleSheet(f"color: {OK};")
+        else:
+            self._sb_status.setText("○ ollama not running — run: sudo systemctl start ollama")
+            self._sb_status.setStyleSheet(f"color: {BAD};")
+
+
+# ─── context helpers (mirror of balai's gather_ctx / needs_ctx) ─────
+
+_CTX_KEYWORDS = re.compile(
+    r"\b(my|current|right now|what(?:'s| is)|how (?:many|much)|status|"
+    r"am i|are we)\b.*\b(battery|cpu|ram|memory|disk|firewall|shield|"
+    r"vpn|wifi|ssid|tor|stealth|power|profile|kernel|uptime|ip|iface|"
+    r"interface|governor|temp|load|connected|protected|online)\b",
+    re.IGNORECASE,
+)
+
+def _needs_ctx(prompt: str) -> bool:
+    return bool(_CTX_KEYWORDS.search(prompt))
+
+
+def _inline_ctx() -> str:
+    iface, ip = _iface_and_ip()
+    cap, st = _battery()
+    return (
+        f"kernel: {_kernel()}\n"
+        f"uptime: {_uptime()}\n"
+        f"load 1m: {_cpu_load()}    governor: {_governor()}\n"
+        f"memory: {_mem()}          disk /: {_disk_root()}\n"
+        f"power-profile: {_power_profile()}\n"
+        f"battery: {cap or 'AC'} {st}\n"
+        f"iface: {iface or 'none'}  ip: {ip or '-'}\n"
+        f"ssid: {_wifi_ssid() or '-'}    vpn: {_vpn_state()}\n"
+        f"firewall: {_shield_tier()}\n"
+    )
+
+
+# ─── entrypoint ────────────────────────────────────────────────────
+
+def main():
+    app = QApplication(sys.argv)
+    app.setApplicationName("balai-chat")
+    app.setOrganizationName("BalOS")
+    # Hint Qt platform plugin on Wayland-first sessions.
+    if os.environ.get("XDG_SESSION_TYPE") == "wayland":
+        os.environ.setdefault("QT_QPA_PLATFORM", "wayland;xcb")
+
+    # Dark palette fallback (for system dialogs that ignore the stylesheet).
+    pal = app.palette()
+    pal.setColor(QPalette.Window, QColor(BG))
+    pal.setColor(QPalette.Base, QColor(PANEL))
+    pal.setColor(QPalette.Text, QColor(FG))
+    pal.setColor(QPalette.WindowText, QColor(FG))
+    pal.setColor(QPalette.Button, QColor(PANEL_ALT))
+    pal.setColor(QPalette.ButtonText, QColor(FG))
+    pal.setColor(QPalette.Highlight, QColor(ACCENT))
+    pal.setColor(QPalette.HighlightedText, QColor("#ffffff"))
+    app.setPalette(pal)
+
+    w = MainWindow()
+    w.show()
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()

@@ -2,23 +2,32 @@
 Type=Application
 Name=BalAI
 GenericName=Offline AI Assistant
-Comment=Local Qwen2.5-1.5B chat — 100% offline
-Icon=system-help
-Exec=kitty --class=balai-chat --title="BalAI" -- balai chat
+Comment=Local Qwen2.5-1.5B chat — 100% offline, sees your live system
+Icon=balai
+Exec=balai-chat
 Terminal=false
-Categories=Utility;Development;ConsoleOnly;
-Keywords=ai;assistant;llm;chat;ollama;qwen;
+Categories=Utility;Network;Education;Qt;
+Keywords=ai;assistant;llm;chat;ollama;qwen;offline;chatbot;
 StartupWMClass=balai-chat
+StartupNotify=true
 
-Actions=ask;cmd;status;
+Actions=terminal;ask;cmd;doctor;status;
+
+[Desktop Action terminal]
+Name=Chat in terminal
+Exec=kitty --class=balai-chat --title="BalAI" -- balai chat
 
 [Desktop Action ask]
 Name=Ask a question
-Exec=sh -c 'kdialog --inputbox "Ask BalAI:" > /tmp/balai-q && kitty --class=balai-chat --title="BalAI" -- balai "$(cat /tmp/balai-q)" --hold'
+Exec=sh -c 'kdialog --inputbox "Ask BalAI:" > /tmp/balai-q && kitty --class=balai-chat --title="BalAI" --hold -- balai "$(cat /tmp/balai-q)"'
 
 [Desktop Action cmd]
 Name=Generate a command from intent
-Exec=sh -c 'kdialog --inputbox "Intent:" > /tmp/balai-i && kitty --class=balai-chat --title="BalAI" -- balai cmd "$(cat /tmp/balai-i)"'
+Exec=sh -c 'kdialog --inputbox "Intent:" > /tmp/balai-i && kitty --class=balai-chat --title="BalAI" --hold -- balai cmd "$(cat /tmp/balai-i)"'
+
+[Desktop Action doctor]
+Name=Run system doctor
+Exec=kitty --class=balai-chat --title="BalAI doctor" --hold -- balai doctor
 
 [Desktop Action status]
 Name=Check BalAI status

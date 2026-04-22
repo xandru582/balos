@@ -222,10 +222,32 @@ The error is "The connection to the server localhost:8080 was refused." …
 | `balai model pull X`   | Download another Qwen/Llama/Phi model (needs network)             |
 | `balai status`         | Service health, active model, RAM                                 |
 | `balai setup`          | Re-run first-run setup (enable service, pull default model)       |
+| `balai-chat` / `bal chat` | **Graphical chat window** (PySide6) with live system panel     |
 
 `bal ?` is a shortcut: `bal ? "how do I…"` → `balai "how do I…"`.
 Even simpler: any unknown multi-word `bal` command is forwarded to balai, so
 `bal how do I enable stealth` Just Works.
+
+### Graphical chat app (`balai-chat`)
+
+`balai-chat` (alias: `bal chat`, `Meta+A`) is a PySide6 window that wraps
+the same local model in a friendlier interface:
+
+- **Live system panel** on the left — battery, CPU load/governor, RAM,
+  disk, network iface/IP/SSID/VPN, firewall tier, power profile, kernel,
+  uptime — refreshing every 5 s.
+- **Streaming chat** in the centre with markdown rendering (fenced code
+  blocks, bullets, bold/inline code).
+- **Quick actions** bar: **🩺 Doctor**, **💡 Tip**, **🧭 Context**,
+  **🧾 Remember…**, **🧹 Clear**, **■ Stop**.
+- **Auto context injection** — when you ask about "my battery", "current
+  firewall", etc, the GUI prepends a live snapshot before sending.
+- **Ollama reachability** indicator in the status bar.
+- **Keyboard shortcuts**: `Enter` send · `Shift+Enter` newline ·
+  `Ctrl+L` clear · `Ctrl+D` doctor · `Ctrl+T` tip · `Ctrl+K` context.
+
+Dependencies (pulled in by the ISO): `pyside6`, `python-requests`,
+`ollama`, `balai`.
 
 ### System-wide integration
 
@@ -245,11 +267,11 @@ BalAI is wired into every surface of the OS, not just its own CLI:
   - `<leader>aa`  → ask (prompts for question)
   - `<leader>af`  → fix
 - **KDE Plasma desktop**
-  - `Meta+A`          → launch BalAI chat (kitty, Matrix theme)
-  - `Meta+Shift+A`    → ask (prompts via `kdialog`)
-  - `Meta+Ctrl+A`     → generate a command
+  - `Meta+A`          → launch **BalAI chat GUI** (Qt, live system panel, streaming)
+  - `Meta+Shift+A`    → ask via `kdialog` (one-shot in kitty)
+  - `Meta+Ctrl+A`     → generate a command via `kdialog`
   - `Meta+B`          → bal fzf menu
-  - App launcher      → "BalAI" entry with Ask/Command/Status actions
+  - App launcher      → "BalAI" with actions: Terminal chat / Ask / Cmd / Doctor / Status
 - **Dolphin (file manager)** — right-click any file → **BalAI ▸ Explain** / **Ask…**
 - **`bal` CLI** — unknown multi-word commands auto-route to balai
 - **pacman** — optional post-transaction operator summary

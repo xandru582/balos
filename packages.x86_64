@@ -433,6 +433,8 @@ python
 python-pip
 python-pipx
 python-virtualenv
+pyside6           # Qt6 bindings — required by /usr/bin/balai-chat GUI
+python-requests   # used by balai-chat to talk to ollama HTTP API
 nodejs
 npm
 yarn

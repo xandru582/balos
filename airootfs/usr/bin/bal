@@ -49,6 +49,7 @@ ${B}SYSTEM${N}
 
 ${B}AI ASSISTANT${N} ${D}(100% offline)${N}
   ${C}ai${N} ${D}[question]${N}     Local LLM assistant (qwen2.5:1.5b)
+  ${C}chat${N}               Graphical chat window with live system panel
   ${C}?${N}  ${D}<question>${N}     Shortcut for: bal ai "<question>"
   ${C}ids${N} ${D}<on|off>${N}      Suricata intrusion detection
 
@@ -105,6 +106,7 @@ interactive_menu() {
 ⚙  init          · Run first-boot wizard
 🔧 kernel-build  · Compile BalKernel (~45 min)
 🤖 ai            · Local LLM assistant (offline qwen2.5:1.5b)
+💬 chat          · BalAI chat GUI (Qt window with live system panel)
 MENU
     )
 
@@ -136,6 +138,7 @@ MENU
         ⚙)             exec balinit ;;
         🔧)           exec balkernel-build ;;
         🤖)           exec balai ;;
+        💬)           exec balai-chat ;;
         *)            exit 0 ;;
     esac
 }
@@ -168,6 +171,7 @@ case "$CMD" in
     init|setup)              exec balinit "$@" ;;
     kernel)                  exec balkernel-build "$@" ;;
     ai|assistant|llm)        exec balai "$@" ;;
+    chat|gui)                exec balai-chat "$@" ;;
     \?|ask)                  exec balai "$@" ;;
     ids|suricata)            exec balids "$@" ;;
     version|-v|--version)    echo "BalOS v${VERSION}" ;;
