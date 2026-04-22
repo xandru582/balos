@@ -611,6 +611,9 @@ dunst
 otf-font-awesome
 
 # ── Local AI assistant (balai) ──────────────────────────────────
-# Ollama runs a local HTTP daemon; qwen2.5:0.5b model (~400MB) is pulled
+# Ollama runs a local HTTP daemon; qwen2.5:1.5b model (~1GB) is pulled
 # during build so `balai` works fully offline after first boot.
+# Why 1.5B and not smaller? 0.5B hallucinates commands and enters loops
+# (empirically tested against the BalOS system prompt). 1.5B is the
+# smallest size that reliably follows BalOS's command surface.
 ollama

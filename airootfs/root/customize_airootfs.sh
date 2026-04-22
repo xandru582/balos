@@ -75,34 +75,72 @@ systemctl mask NetworkManager-wait-online.service   2>/dev/null || true
 chmod +x /usr/bin/bal* 2>/dev/null || true
 
 # ── Pre-bake small LLM for balai (offline AI assistant) ─────────
-# We pull qwen2.5:0.5b (~400 MB Q4) while the chroot still has network.
+# We pull qwen2.5:1.5b (~1GB Q4) while the chroot still has network.
 # After this, `balai` works 100% offline. Non-fatal if pull fails —
 # user can run `balai setup` after first boot with internet.
+#
+# Path alignment: ollama's systemd service in Arch runs as user `ollama`
+# with HOME=/var/lib/ollama, so it reads models from
+# /var/lib/ollama/.ollama/models. We bake there so both the service and
+# balai's user-level fallback see the same model store.
 if command -v ollama &>/dev/null; then
-    echo "[balai] pulling model into squashfs (this takes a few minutes)…"
-    export OLLAMA_MODELS=/var/lib/ollama/models
-    mkdir -p "$OLLAMA_MODELS"
-    # Start ollama in background inside chroot
+    echo "[balai] pulling model into squashfs (this can take 5-10 min)…"
+    BALAI_MODEL_BAKE="qwen2.5:1.5b-instruct-q4_K_M"
+    BALAI_MODELS_DIR="/var/lib/ollama/.ollama/models"
+    mkdir -p "$BALAI_MODELS_DIR"
+
+    # Make sure the ollama user exists (the pacman post-install hook
+    # usually creates it; belt-and-braces here for chroot race conditions).
+    id ollama &>/dev/null || useradd -r -s /usr/bin/nologin -d /var/lib/ollama ollama 2>/dev/null || true
+
+    # Start ollama in background in the chroot. Export HOME so the
+    # default model path matches the service's path.
+    export HOME=/var/lib/ollama
+    export OLLAMA_MODELS="$BALAI_MODELS_DIR"
     ollama serve >/tmp/ollama-build.log 2>&1 &
     OLLAMA_PID=$!
-    # Wait for it to respond (up to 20 s)
+
+    # Wait up to 20 s for the API to come up
     for i in {1..40}; do
         curl -fsS --max-time 1 http://127.0.0.1:11434/api/tags &>/dev/null && break
         sleep 0.5
     done
+
     if curl -fsS --max-time 2 http://127.0.0.1:11434/api/tags &>/dev/null; then
-        ollama pull qwen2.5:0.5b-instruct-q4_K_M 2>&1 | tail -5 || \
-            echo "[balai] model pull failed — user can run 'balai setup' later"
+        if ollama pull "$BALAI_MODEL_BAKE" 2>&1 | tail -5; then
+            echo "[balai] model baked: $BALAI_MODEL_BAKE"
+        else
+            echo "[balai] WARN: model pull failed — user can run 'balai setup' after first boot"
+        fi
     else
-        echo "[balai] ollama serve didn't come up in chroot — skipping pre-bake"
+        echo "[balai] WARN: ollama serve didn't come up in chroot — skipping pre-bake"
     fi
+
     kill "$OLLAMA_PID" 2>/dev/null || true
     wait "$OLLAMA_PID" 2>/dev/null || true
-    # Fix ownership (ollama user gets created by its package)
+
+    # Fix ownership so the systemd service (running as user ollama) can read.
     if id ollama &>/dev/null; then
         chown -R ollama:ollama /var/lib/ollama 2>/dev/null || true
     fi
+    unset HOME OLLAMA_MODELS
 fi
+
+# ── Systemd drop-in to harden ollama for BalOS ──────────────────
+# Keeps the model store path explicit and disables the phone-home.
+mkdir -p /etc/systemd/system/ollama.service.d
+cat > /etc/systemd/system/ollama.service.d/balos.conf << 'DROPIN'
+[Service]
+# Explicit model path — matches where customize_airootfs.sh bakes models.
+Environment="OLLAMA_MODELS=/var/lib/ollama/.ollama/models"
+# Bind to loopback only — no remote inference.
+Environment="OLLAMA_HOST=127.0.0.1:11434"
+# Disable ollama.com cloud and telemetry.
+Environment="OLLAMA_NO_CLOUD=true"
+Environment="OLLAMA_ORIGINS=http://localhost,http://127.0.0.1"
+# Keep model loaded in RAM for 5 min after last request (fast follow-ups).
+Environment="OLLAMA_KEEP_ALIVE=5m"
+DROPIN
 
 # ── Wordlists: stable symlink so balhack / balrecon hints resolve ──
 # seclists ships rockyou under /usr/share/seclists/Passwords/Leaked-Databases/.

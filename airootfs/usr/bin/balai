@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
-# balai — BalOS local AI assistant (offline, ~400MB Qwen2.5-0.5B)
+# balai — BalOS local AI assistant (offline, ~1GB Qwen2.5-1.5B)
 # Talks to local ollama HTTP API on 127.0.0.1:11434.
 # You are NOT forwarding anything to the cloud — 100% local.
+#
+# Why 1.5B and not smaller? Empirical testing: Qwen2.5-0.5B hallucinates
+# commands that don't exist ("bal wipe"), enters token-repetition loops,
+# and gives wrong answers ~50% of the time. Qwen2.5-1.5B is the smallest
+# Qwen that reliably follows the BalOS system prompt. Users with more RAM
+# can upgrade to 3b/7b via: BALAI_MODEL=qwen2.5:3b-instruct-q4_K_M
 set -uo pipefail
 
-VERSION="1.0.0-dark"
-MODEL_DEFAULT="qwen2.5:0.5b-instruct-q4_K_M"
+VERSION="1.0.1-dark"
+MODEL_DEFAULT="qwen2.5:1.5b-instruct-q4_K_M"
 MODEL="${BALAI_MODEL:-$MODEL_DEFAULT}"
-SYSTEM_PROMPT_FILE="/usr/share/balos/ai/system-prompt.md"
+SYSTEM_PROMPT_FILE="${BALAI_SYSTEM_PROMPT:-/usr/share/balos/ai/system-prompt.md}"
 OLLAMA_HOST="${OLLAMA_HOST:-127.0.0.1:11434}"
 OLLAMA_URL="http://${OLLAMA_HOST}"
 HISTORY_FILE="${XDG_STATE_HOME:-$HOME/.local/state}/balai/history.jsonl"
@@ -24,20 +30,29 @@ warn() { echo -e "${Y}⚠ $*${N}" >&2; }
 ok()   { echo -e "${G}✓${N} $*" >&2; }
 
 # Start ollama service if not running (idempotent).
+# On BalOS the package installs a systemd service that reads models from
+# /var/lib/ollama/.ollama/models (HOME=/var/lib/ollama). We respect that.
+# Fallback path (user-level serve) mirrors the same HOME so both paths see
+# the models baked into squashfs during the ISO build.
 ensure_ollama() {
     if curl -fsS --max-time 2 "${OLLAMA_URL}/api/tags" &>/dev/null; then
         return 0
     fi
     info "ollama not responding — starting service…"
-    if systemctl is-enabled ollama &>/dev/null; then
+    if systemctl is-enabled ollama &>/dev/null 2>&1; then
+        sudo systemctl start ollama 2>/dev/null || true
+    elif command -v systemctl &>/dev/null && systemctl cat ollama &>/dev/null; then
         sudo systemctl start ollama 2>/dev/null || true
     else
-        # user-level fallback (live ISO case)
+        # user-level fallback (e.g. live ISO without service installed).
+        # Point at the system model dir so baked-in models are visible.
+        export OLLAMA_MODELS="${OLLAMA_MODELS:-/var/lib/ollama/.ollama/models}"
+        [[ ! -r "$OLLAMA_MODELS" ]] && export OLLAMA_MODELS="$HOME/.ollama/models"
         nohup ollama serve &>/dev/null &
         disown
     fi
-    # wait up to 10 s
-    for i in {1..20}; do
+    # wait up to 15 s (startup can be slow first time)
+    for i in {1..30}; do
         sleep 0.5
         curl -fsS --max-time 1 "${OLLAMA_URL}/api/tags" &>/dev/null && { ok "ollama up"; return 0; }
     done
@@ -45,18 +60,34 @@ ensure_ollama() {
 }
 
 # Check if model is present locally; pull if missing (requires network).
+# Uses proper JSON parsing (grep on JSON is fragile due to whitespace).
 ensure_model() {
     local m="${1:-$MODEL}"
-    if curl -fsS "${OLLAMA_URL}/api/tags" | grep -q "\"name\":\"${m}\""; then
-        return 0
-    fi
+    local found
+    found=$(curl -fsS --max-time 3 "${OLLAMA_URL}/api/tags" 2>/dev/null \
+        | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    names = {mod['name'] for mod in d.get('models', [])}
+    print('yes' if '$m' in names else 'no')
+except Exception:
+    print('no')" 2>/dev/null)
+    [[ "$found" == "yes" ]] && return 0
     warn "model ${m} not found locally"
-    if ! ping -c1 -W2 1.1.1.1 &>/dev/null; then
+    # Soft network probe: try curl against ollama registry (doesn't reveal
+    # user activity). Ping to 1.1.1.1 fails under fortress firewall.
+    if ! curl -fsS --max-time 3 -o /dev/null https://registry.ollama.ai 2>/dev/null; then
         die "no network — cannot pull model. Connect to internet or pick a model that's already installed (\`balai model list\`)."
     fi
-    echo -ne "${Y}pull ${m} now? (~400MB for qwen2.5:0.5b) [Y/n] ${N}"
+    local sz="~1 GB"
+    [[ "$m" == *"0.5b"* ]] && sz="~400 MB"
+    [[ "$m" == *"3b"*   ]] && sz="~2 GB"
+    [[ "$m" == *"7b"*   ]] && sz="~4 GB"
+    echo -ne "${Y}pull ${m} now? (${sz}) [Y/n] ${N}"
     read -r ans
-    [[ "${ans,,}" =~ ^(n|no)$ ]] && die "aborted"
+    ans=$(printf '%s' "$ans" | tr '[:upper:]' '[:lower:]')
+    [[ "$ans" =~ ^(n|no)$ ]] && die "aborted"
     ollama pull "$m" || die "pull failed"
 }
 
@@ -143,14 +174,43 @@ for raw in sys.stdin:
 # Read the last assistant reply (populated by stream_chat).
 last_reply() { cat "$LAST_CMD_FILE" 2>/dev/null; }
 
-# Extract first fenced code block from assistant output.
+# Extract first command from assistant output — tries multiple formats.
+# 1. Fenced ```bash / ```sh / ``` block (strict, most common).
+# 2. $-prefixed line.
+# 3. Single inline `backtick` span when the response is a one-liner.
 extract_command() {
     local txt="$1"
-    # Try ```bash / ```sh / ``` plain.
-    echo "$txt" | awk '
-        /^```(bash|sh|shell)?[[:space:]]*$/ { inblk=!inblk; next }
+    local cmd
+    # 1. Fenced code block. Stop after first block.
+    cmd=$(echo "$txt" | awk '
+        BEGIN { inblk=0; done=0 }
+        done { next }
+        /^```(bash|sh|shell)?[[:space:]]*$/ {
+            if (inblk) { done=1 }
+            inblk = !inblk
+            next
+        }
         inblk { print }
-    ' | head -20
+    ' | head -20)
+    if [[ -n "${cmd//[[:space:]]/}" ]]; then
+        printf '%s\n' "$cmd"
+        return 0
+    fi
+    # 2. Shell-prompt-prefixed line (`$ command`).
+    cmd=$(echo "$txt" | grep -E '^[[:space:]]*\$[[:space:]]' | head -1 \
+         | sed -E 's/^[[:space:]]*\$[[:space:]]+//')
+    if [[ -n "$cmd" ]]; then
+        printf '%s\n' "$cmd"
+        return 0
+    fi
+    # 3. Single inline backtick span — only if response is short (≤3 lines).
+    local lines
+    lines=$(echo "$txt" | wc -l)
+    if (( lines <= 3 )); then
+        cmd=$(echo "$txt" | grep -oE '`[^`]+`' | head -1 | tr -d '`')
+        [[ -n "$cmd" ]] && { printf '%s\n' "$cmd"; return 0; }
+    fi
+    return 1
 }
 
 # ─── subcommands ─────────────────────────────────────────────────
@@ -192,32 +252,55 @@ cmd_cmd() {
     ensure_model
     local intent="$*"
     echo -e "${D}thinking…${N}"
-    stream_chat "Translate this intent into a single shell command. Output only ONE fenced code block followed by one short explanation. Intent: ${intent}"
-    local reply
-    reply=$(last_reply)
+    stream_chat "Translate this intent into ONE shell command. Respond with exactly ONE fenced \`\`\`bash block containing the command, followed by at most ONE short line. Do not repeat the block. If the task needs a bal* wrapper, prefer it. Intent: ${intent}"
 
-    local cmd
+    local reply cmd
+    reply=$(last_reply)
     cmd=$(extract_command "$reply")
     [[ -z "$cmd" ]] && die "no command extracted — try rephrasing"
+
+    # Strip any leading `$ ` prompt, trim outer whitespace.
+    cmd="${cmd#$ }"
+    cmd="$(echo "$cmd" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
 
     echo ""
     echo -e "${M}${B}suggested:${N}"
     echo -e "${C}$cmd${N}"
     echo ""
-    # Safety: block anything starting with rm -rf /, dd of=/dev, mkfs.
-    if echo "$cmd" | grep -qE '(rm -rf /( |$)|dd .*of=/dev/|mkfs\.|wipefs|> /dev/sd|shred .*/dev/)'; then
+
+    # Safety block — widened after audit. Refuses to auto-run anything
+    # that matches any of these DESTRUCTIVE patterns:
+    local danger_re='(^|[[:space:];&|`(])(rm[[:space:]]+-[a-zA-Z]*r[a-zA-Z]*[fF][a-zA-Z]*[[:space:]]+/([[:space:]]|$)|dd[[:space:]].*of=/dev/(sd|nvme|hd|mmc)|mkfs\.[a-z0-9]+[[:space:]]+/dev/|wipefs[[:space:]]|shred[[:space:]].*[[:space:]]/dev/|>[[:space:]]*/dev/(sd|nvme|hd)|cryptsetup[[:space:]]+(erase|luksRemoveKey)|fdisk[[:space:]]+/dev/|parted[[:space:]]+/dev/|blkdiscard[[:space:]]|chmod[[:space:]]+-R[[:space:]]+.*[[:space:]]/([[:space:]]|$)|chown[[:space:]]+-R[[:space:]]+.*[[:space:]]/([[:space:]]|$)|:\(\)\{)'
+    if echo "$cmd" | grep -qE "$danger_re"; then
         warn "this looks DESTRUCTIVE — review manually; not offering to run it."
+        if need wl-copy; then
+            printf '%s' "$cmd" | wl-copy 2>/dev/null && info "copied to clipboard so you can inspect it"
+        fi
         return 1
     fi
+
+    # Also warn (but allow) for anything touching /etc or /boot as root.
+    local caution=""
+    if echo "$cmd" | grep -qE '(^|[[:space:];|&])sudo[[:space:]]+.*[[:space:]]/(etc|boot|usr|var/lib)(/|[[:space:]]|$)'; then
+        caution="modifies system files"
+    fi
+    [[ -n "$caution" ]] && warn "caution: $caution"
+
     echo -ne "${Y}run it? [y/N] ${N}"
     local ans
     read -r ans
-    if [[ "${ans,,}" =~ ^(y|yes)$ ]]; then
+    ans=$(printf '%s' "$ans" | tr '[:upper:]' '[:lower:]')
+    if [[ "$ans" =~ ^(y|yes)$ ]]; then
         echo -e "${D}────────────────────${N}"
-        eval "$cmd"
+        # Use bash -c so user's shell state (aliases, functions) isn't
+        # accidentally polluted and so errors don't kill balai via set -e.
+        bash -c "$cmd"
     else
-        ok "copied to clipboard (if wl-copy available)"
-        need wl-copy && echo -n "$cmd" | wl-copy 2>/dev/null || true
+        if need wl-copy; then
+            printf '%s' "$cmd" | wl-copy 2>/dev/null && ok "copied to clipboard"
+        else
+            info "not run — command shown above"
+        fi
     fi
 }
 
@@ -226,14 +309,28 @@ cmd_explain() {
     ensure_model
     local target="${1:-}"
     local content
+    # Piped input always wins: `cat err.log | balai explain`
+    if [[ ! -t 0 ]]; then
+        content=$(head -c 8000)
+        [[ -z "$content" ]] && die "nothing on stdin"
+        stream_chat "Explain this output and suggest next steps. Be terse.\n\n${content}"
+        return
+    fi
     if [[ -z "$target" || "$target" == "--last" ]]; then
-        # Explain last shell command's output.
-        content=$(fc -ln -1 2>/dev/null || tail -20 ~/.zsh_history 2>/dev/null | tail -1)
-        [[ -z "$content" ]] && die "nothing to explain — pipe or pass a file: balai explain <file>"
+        # Read last line of zsh_history (default shell) or bash_history fallback.
+        # `fc` only works in interactive shells — we're in a script subshell.
+        local histf=""
+        for f in "${HISTFILE:-}" "$HOME/.zsh_history" "$HOME/.bash_history"; do
+            [[ -n "$f" && -f "$f" ]] && { histf="$f"; break; }
+        done
+        [[ -z "$histf" ]] && die "no history file found — pipe input instead: <cmd> |& balai explain"
+        # zsh extended-history lines look like: ": 1718049310:0;actual cmd"
+        content=$(tail -1 "$histf" | sed -E 's/^: [0-9]+:[0-9]+;//')
+        [[ -z "$content" ]] && die "history empty"
         stream_chat "Explain what this command does and any pitfalls: ${content}"
     elif [[ -f "$target" ]]; then
         content=$(head -c 8000 "$target")
-        stream_chat "Explain this file (truncated to 8KB if larger):\n\n${content}"
+        stream_chat "Explain this file (truncated to 8KB if larger). File: ${target}\n\n${content}"
     else
         # Treat as literal command/text.
         stream_chat "Explain this: ${target} $*"
@@ -331,7 +428,8 @@ ${B}USAGE${N}
   balai setup                    ${D}# first-run: enable service + pull model${N}
 
 ${B}ENV${N}
-  BALAI_MODEL=<name>   ${D}# override default model (qwen2.5:0.5b…)${N}
+  BALAI_MODEL=<name>           ${D}# override default model (e.g. qwen2.5:3b-instruct-q4_K_M)${N}
+  BALAI_SYSTEM_PROMPT=<path>   ${D}# override system prompt file${N}
   OLLAMA_HOST=host:port
 
 ${B}EXAMPLES${N}

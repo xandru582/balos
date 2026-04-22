@@ -48,8 +48,9 @@ ${B}SYSTEM${N}
   ${C}kernel${N} ${D}build${N}        Compile custom BalKernel (~45 min)
 
 ${B}AI ASSISTANT${N} ${D}(100% offline)${N}
-  ${C}ai${N} ${D}[question]${N}     Local LLM assistant (qwen2.5:0.5b)
+  ${C}ai${N} ${D}[question]${N}     Local LLM assistant (qwen2.5:1.5b)
   ${C}?${N}  ${D}<question>${N}     Shortcut for: bal ai "<question>"
+  ${C}ids${N} ${D}<on|off>${N}      Suricata intrusion detection
 
 ${B}EXAMPLES${N}
   ${D}bal${N}                             ${D}# pick from menu${N}
@@ -168,6 +169,7 @@ case "$CMD" in
     kernel)                  exec balkernel-build "$@" ;;
     ai|assistant|llm)        exec balai "$@" ;;
     \?|ask)                  exec balai "$@" ;;
+    ids|suricata)            exec balids "$@" ;;
     version|-v|--version)    echo "BalOS v${VERSION}" ;;
     help|-h|--help)          usage ;;
     *)                       echo "Unknown command: $CMD"; echo ""; usage; exit 1 ;;
