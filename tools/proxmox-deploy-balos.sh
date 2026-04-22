@@ -18,7 +18,7 @@
 #
 # Usage:
 #   ./tools/proxmox-deploy-balos.sh                    # interactive
-#   PVE_HOST=REDACTED PVE_USER=root@pam ./tools/proxmox-deploy-balos.sh
+#   PVE_HOST=<your-proxmox-ip> PVE_USER=root@pam ./tools/proxmox-deploy-balos.sh
 #
 # Safety:
 #   - Refuses to continue if LXC 101 (docker) is missing.
@@ -29,7 +29,11 @@
 
 set -euo pipefail
 
-PVE_HOST="${PVE_HOST:-REDACTED}"
+PVE_HOST="${PVE_HOST:-}"
+if [[ -z "$PVE_HOST" ]]; then
+    read -rp "Proxmox host (IP or hostname): " PVE_HOST
+    [[ -n "$PVE_HOST" ]] || { echo "PVE_HOST required" >&2; exit 1; }
+fi
 PVE_PORT="${PVE_PORT:-8006}"
 PVE_USER="${PVE_USER:-root@pam}"
 PVE_NODE="${PVE_NODE:-pve}"
