@@ -38,7 +38,23 @@ echo -e "${G}✓${N} Starting makepkg (this takes 30-60 min on modern laptops)..
 echo -e "${C}Tip:${N} cancel anytime with Ctrl-C; progress preserved."
 echo ""
 
-time makepkg -s --noconfirm
+LOG="$BUILD_DIR/build.log"
+# We want to continue the script (and invoke balai) on failure, so disable
+# -e around the long-running compile and capture its status ourselves.
+set +e
+time makepkg -s --noconfirm 2>&1 | tee "$LOG"
+status=${PIPESTATUS[0]}
+set -e
+if (( status != 0 )); then
+    echo -e "\n${Y}${B}✗ kernel build failed (exit $status)${N}"
+    echo -e "  full log: $LOG"
+    if command -v balai &>/dev/null; then
+        echo -e "\n${C}${B}▸ balai diagnosis:${N}"
+        # Tail the log for context; errors cluster at the end.
+        tail -c 6000 "$LOG" | timeout 60 balai fix 2>/dev/null || true
+    fi
+    exit "$status"
+fi
 
 # Install
 echo ""

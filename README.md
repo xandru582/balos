@@ -265,6 +265,11 @@ BalAI is wired into every surface of the OS, not just its own CLI:
   demand.
 - **`balrecon`** — every report gets an AI "Attack Surface / Top 3 Priorities"
   section appended automatically (disable with `--no-ai`).
+- **`balupdate`** — on failure, tails pacman log into `balai fix` for
+  diagnosis before rolling back. Opt-in post-success summary of what
+  changed (`sudo touch /etc/balos/update-ai-summary.on`).
+- **`balkernel-build`** — if the compile fails, the tail of the log is
+  piped through `balai fix` so you get a diagnosis before scrolling.
 - **Smart `aifix`** — with no args, reads the last command + its exit code
   (captured by zsh hooks) and feeds both to the model, so you never paste.
 - **Persistent memory** — `balai remember "I use btrfs and nvim"`. Notes live
