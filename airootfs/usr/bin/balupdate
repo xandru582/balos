@@ -108,12 +108,22 @@ do_update() {
     if { [[ -f /etc/balos/update-ai-summary.on ]] || [[ "${BALUPDATE_AI:-0}" == "1" ]]; } \
         && command -v balai &>/dev/null && [[ -s "$log" ]]; then
         echo -e "\n${M}${B}▸ balai: what changed${N}"
-        local tgts
-        tgts=$(grep -E '^\s*(installing|upgrading|removing)' "$log" | head -40)
+        local tgts upgrades
+        tgts=$(grep -E '^\s*(installing|upgrading|removing)' "$log" | head -60)
+
+        # Try to enrich with version deltas parsed from the pacman log so
+        # the model can say "kernel 6.12 → 6.13" instead of generic noise.
+        upgrades=$(awk '
+            /^upgraded / {
+                gsub(/\(|\)|,/," "); print
+            }' /var/log/pacman.log 2>/dev/null | tail -40)
+
         if [[ -n "$tgts" ]]; then
-            printf 'Summarise in 3 bullets what changed in this BalOS update and flag anything the operator should test or watch:\n\n%s' "$tgts" \
-                | timeout 45 balai 2>/dev/null || true
-        fi
+            printf 'BalOS update just completed. The pacman transaction touched:\n\n%s\n' "$tgts"
+            [[ -n "$upgrades" ]] && printf '\nVersion deltas (pacman log):\n%s\n' "$upgrades"
+            printf '\nIn 4 bullets:\n- Biggest change (kernel / Plasma / firmware / crypto lib)\n- Anything the operator should test after reboot\n- Any package that had a major version jump (security or behaviour implications)\n- Nothing-to-worry-about packages lumped into a single line\n\nBe terse. No fluff.'
+        fi \
+            | timeout 60 balai 2>/dev/null || true
     fi
     rm -f "$log"
 }

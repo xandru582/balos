@@ -1,0 +1,103 @@
+.TH BALAI-CHAT 1 "2026" "BalOS 1.0" "BalOS Manual"
+.SH NAME
+balai-chat \- graphical Qt6 front-end for BalAI
+.SH SYNOPSIS
+.B balai-chat
+[\fIquestion\fR...]
+.SH DESCRIPTION
+A PySide6 chat window around the same local Qwen2.5 model used by
+.BR balai (1).
+If one or more positional arguments are given, they are joined and
+sent as the initial query as soon as the window appears — the entry
+point used by the KRunner plugin (see
+.BR balai-krunner (1)).
+
+The window is divided in two:
+
+.SS Sidebar (left)
+Live system dashboard updated every 5 s. Reflects
+.B /run/balos/power-profile
+and
+.B /run/balos/shield-tier
+changes in real time via
+.B QFileSystemWatcher
+(no polling lag). Shows battery, AC, CPU load, governor, memory,
+disk, iface, IPv4, SSID, VPN state, firewall tier, kernel, uptime.
+
+.SS Chat (right)
+Streaming message area with fenced-code rendering, plus a toolbar of
+one-click actions (Doctor, Tip, Context, Remember, Copy code, Clear,
+Stop) and a model dropdown populated from
+.BR "ollama list" "."
+.SH SHORTCUTS
+.TP
+.B Enter
+Send current message.
+.TP
+.B Shift+Enter
+Newline in the input.
+.TP
+.B Ctrl+L
+Clear the conversation.
+.TP
+.B Ctrl+D
+Run
+.BR "balai doctor" .
+.TP
+.B Ctrl+T
+Run
+.BR "balai tip" .
+.TP
+.B Ctrl+K
+Show
+.BR "balai ctx" .
+.TP
+.B Ctrl+S
+Export the current conversation to a markdown file.
+.TP
+.B Ctrl+,
+Open the settings dialog (context mode / temperature / theme).
+.TP
+.B Ctrl+Shift+C
+Copy the most recent fenced code block to the clipboard.
+.TP
+.B Ctrl+Q
+Quit (really — bypasses the tray-hide behaviour).
+.SH SYSTEM TRAY
+If the desktop supports a tray, closing the window hides to tray
+instead of quitting. Right-click offers Show/Hide, Ask…, Doctor,
+Quit. Answers that arrive while hidden raise a desktop
+notification with the first line of the response.
+.SH SETTINGS
+Persisted via
+.B QSettings
+under the
+.B BalOS/balai-chat
+namespace (backed by
+.BR "~/.config/BalOS/balai-chat.conf" ).
+Fields:
+.BR ctx_mode " (auto/always/never),"
+.BR temperature " (0.00-1.50),"
+.BR theme "."
+Changes to
+.B ctx_mode
+are exported to
+.B BALAI_CTX_MODE
+so the worker thread and any spawned
+.B balai
+subprocesses inherit them.
+.SH ENVIRONMENT
+.TP
+.B BALAI_MODEL
+Default model, shown in the dropdown at start (user can switch).
+.TP
+.B OLLAMA_HOST
+host:port of the ollama daemon (default 127.0.0.1:11434).
+.TP
+.B BALAI_NOTES_FILE
+Override the notes location (default
+.BR "~/.local/state/balai/notes.md" ).
+.SH SEE ALSO
+.BR balai (1),
+.BR balai-krunner (1),
+.BR ollama (1)

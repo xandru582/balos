@@ -4,6 +4,60 @@ Thanks for considering a contribution! BalOS grows best when people who
 actually use the system extend it to fit their workflows. This document
 describes how to get changes merged cleanly.
 
+## Architecture at a glance
+
+```
+                       ┌────────────────────────────┐
+                       │  User surfaces              │
+ Meta+A  ─────────────▶│  balai-chat   (PySide6)     │───┐
+ Alt+Space "? …" ─────▶│  balai-krunner (DBus)       │   │
+ Dolphin right-click ─▶│  balai.desktop Actions      │   │
+ Zsh ? / ?? / wtf ────▶│  /etc/zsh/zshrc.d/50-balai  │   │
+ Neovim :BalAI ───────▶│  /etc/skel/.config/nvim     │   │
+ TTY login ───────────▶│  balai-motd                 │   │
+ bal chat / bal ai ───▶│  bal dispatcher             │   │
+                       └─────────────────────────────┘   │
+                                                        ▼
+                                        ┌──────────────────────┐
+                                        │ /usr/bin/balai (core)│
+                                        │   gather_ctx()  ─────┐│
+                                        │   with_ctx()         ││
+                                        │   stream_chat()      ││
+                                        │   is_destructive()   ││
+                                        │   cmd_* subcommands  ││
+                                        └───────────┬──────────┘│
+                                                    │           │
+  bal{boost,saver,shield,...} ──writes──▶ /run/balos/─┘           │
+    (unified live state)                                          │
+                                                                  ▼
+                                    ┌────────────────────────────────┐
+                                    │ ollama systemd drop-in          │
+                                    │   OLLAMA_HOST=127.0.0.1:11434   │
+                                    │   OLLAMA_KEEP_ALIVE=15m         │
+                                    │   OLLAMA_NO_CLOUD=true          │
+                                    │   Qwen2.5-1.5B-Instruct Q4_K_M  │
+                                    │   (baked into /var/lib/ollama)  │
+                                    └────────────────────────────────┘
+```
+
+**Shared live state** (ephemeral, under `/run`):
+
+| Path                            | Writer                 | Reader                            |
+|---------------------------------|------------------------|------------------------------------|
+| `/run/balos/power-profile`      | balboost / balsaver    | balai ctx, balmonitor, balai-chat  |
+| `/run/balos/shield-tier`        | balshield              | balai ctx, balmonitor, balai-chat  |
+| `/run/balos/stealth`            | balstealth             | balai ctx                          |
+| `/run/user/$UID/balai-ctx-*`    | balai `gather_ctx()`   | balai (2-second cache)             |
+| `/run/user/$UID/balai-last-*`   | balai cmd              | zsh `aifix`                        |
+
+**Persistent user state** (wiped by `bal panic`):
+
+| Path                                     | Purpose                               |
+|------------------------------------------|---------------------------------------|
+| `~/.local/state/balai/history.jsonl`     | Chat transcript                       |
+| `~/.local/state/balai/notes.md`          | Remembered preferences                |
+| `~/.config/BalOS/balai-chat.conf`        | GUI settings (QSettings backing file) |
+
 ## Ground rules
 
 - Be nice. Discuss intent before writing a large PR.

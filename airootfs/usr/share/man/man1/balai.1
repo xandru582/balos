@@ -1,0 +1,175 @@
+.TH BALAI 1 "2026" "BalOS 1.0" "BalOS Manual"
+.SH NAME
+balai \- local offline AI assistant for BalOS
+.SH SYNOPSIS
+.B balai
+[\fICOMMAND\fR] [\fIARGS\fR...]
+.br
+.B balai
+"\fIquestion\fR"
+.SH DESCRIPTION
+\fBbalai\fR is a command-line wrapper around the local
+.I ollama
+HTTP daemon at 127.0.0.1:11434, pre-loaded with a Qwen2.5-1.5B-Instruct
+Q4_K_M model (~1 GB, baked into the squashfs at ISO build time).
+
+Nothing ever leaves the machine: no API keys, no cloud, no telemetry.
+The systemd drop-in pins
+.B OLLAMA_HOST=127.0.0.1:11434 ,
+.B OLLAMA_NO_CLOUD=true ,
+and
+.B OLLAMA_KEEP_ALIVE=15m .
+.SH COMMANDS
+.TP
+.BR "" " (no arg)"
+Launch the interactive chat REPL. Type \fI/clear\fR to reset, \fI/model\fR
+to switch, \fI/help\fR for meta commands. Exit with \fI/exit\fR or Ctrl-D.
+.TP
+.BI "\"" question "\""
+One-shot query. Streams the answer and exits.
+.TP
+.BI "cmd \"" intent "\""
+Translate intent into ONE shell command. Shows the suggestion, blocks
+destructive patterns via the shared
+.B is_destructive
+regex (see
+.BR "" "SAFETY" "),"
+and asks for confirmation before running.
+.TP
+.BI "agent \"" goal "\""
+Iterative approval loop. The model proposes ONE command at a time,
+you hit Enter (run) / s (skip) / q (quit) / e (edit). Output is fed
+back into the next turn so the model can reason about results. Ends
+on
+.B DONE:
+or
+.B ABORT:
+markers or after
+.B BALAI_AGENT_MAX_STEPS
+(default 10) iterations.
+.TP
+.BR "explain " [\fIfile | --last | --diff A B\fR]
+Explain a file, the last shell history command, piped stdin, or the
+semantic difference between two files.
+.TP
+.BR "fix " [\fIerror text\fR]
+Diagnose an error and suggest a concrete fix. Stdin is accepted.
+.TP
+.B ctx
+Dump the live system context that balai would inject for a
+state-aware question (power profile, firewall tier, battery, VPN,
+WiFi, kernel, uptime).
+.TP
+.B doctor
+Gather diagnostics (failed systemd units, journal errors, disk
+pressure, .pacnew files, pacman log tail) and produce a
+one-paragraph AI verdict.
+.TP
+.B tip
+One-line proactive suggestion based on the current snapshot. Also
+shown in
+.B bal status
+(aka
+.BR "balmonitor --once ")
+footer.
+.TP
+.BI "remember \"" fact "\""
+Append a persistent note that is prepended to every future prompt.
+Stored at
+.B $XDG_STATE_HOME/balai/notes.md
+(or ~/.local/state/balai/notes.md).
+.TP
+.B memory
+Show all remembered notes.
+.TP
+.BR "forget " [\fIpattern\fR]
+Drop notes matching a pattern (or wipe all with confirmation).
+.TP
+.BR "model " [\fIlist|pull|rm|default\fR]
+Manage local models.
+.TP
+.B status
+Service + model health + RAM usage.
+.TP
+.B setup
+Re-run first-run setup (enable systemd service, pull default model).
+.SH CONTEXT AWARENESS
+When a query mentions words like
+.I my , current , what's my
+and a system concept (battery, firewall, VPN, …), balai prepends a
+short
+.B "Current BalOS system state:"
+block before sending the prompt. The model is instructed to answer
+from that block rather than guessing. Override with:
+.TP
+.B BALAI_CTX_MODE=auto
+Default — inject only when the query looks stateful.
+.TP
+.B BALAI_CTX_MODE=always
+Always inject.
+.TP
+.B BALAI_CTX_MODE=never
+Never inject.
+.SH SAFETY
+.B balai cmd
+and
+.B balai agent
+share a destructive-command blocklist (see
+.B is_destructive
+in the script). Refused patterns include:
+.BR "rm -rf /... " "/"
+.BR "rm -rf /home " ","
+.BR "dd of=/dev/sdX " ","
+.BR "mkfs " ","
+.BR "curl ... | bash " ","
+fork bombs,
+.BR "chmod 777 / " ","
+.BR "killall -9 systemd " ","
+.B cryptsetup erase
+and more. Refused commands are not run; they are optionally copied to
+your clipboard so you can inspect them.
+.SH ENVIRONMENT
+.TP
+.B BALAI_MODEL
+Override the default model (e.g. \fBqwen2.5:3b-instruct-q4_K_M\fR).
+.TP
+.B BALAI_SYSTEM_PROMPT
+Path to a custom system prompt file.
+.TP
+.B BALAI_CTX_MODE
+\fBauto\fR | \fBalways\fR | \fBnever\fR. See CONTEXT AWARENESS.
+.TP
+.B BALAI_AGENT_MAX_STEPS
+Upper bound for the agent loop (default 10).
+.TP
+.B OLLAMA_HOST
+host:port of the ollama daemon (default 127.0.0.1:11434).
+.SH FILES
+.TP
+.B /usr/bin/balai
+Main CLI.
+.TP
+.B /usr/bin/balai-chat
+Graphical Qt6 chat window (see
+.BR balai-chat (1)).
+.TP
+.B /usr/share/balos/ai/system-prompt.md
+System prompt injected on every turn.
+.TP
+.B ~/.local/state/balai/history.jsonl
+Chat history (wiped by
+.BR "bal panic soft ").
+.TP
+.B ~/.local/state/balai/notes.md
+Remembered notes (wiped by
+.BR "bal panic soft ").
+.TP
+.B /run/balos/{power-profile,shield-tier}
+Live-state files consumed by
+.BR "balai ctx ".
+.SH SEE ALSO
+.BR bal (1),
+.BR ollama (1),
+.BR balpanic (1)
+.SH AUTHOR
+BalOS project.

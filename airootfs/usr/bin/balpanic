@@ -85,8 +85,10 @@ do_soft() {
             rm -f "$ai_dir/last-suggested" 2>/dev/null || true
         done
     done
-    # balai also writes a last-suggested cmd under /run (ephemeral, still cleanse)
+    # balai also writes a last-suggested cmd + ctx cache under /run (ephemeral, still cleanse)
     rm -f /run/user/*/balai-last-suggested 2>/dev/null || true
+    rm -f /run/user/*/balai-ctx-*         2>/dev/null || true
+    rm -f /tmp/balai-ctx-*                2>/dev/null || true
     step "BalAI chat history + notes wiped"
 
     # 4. Recent files

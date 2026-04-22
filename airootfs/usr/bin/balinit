@@ -148,6 +148,47 @@ if command -v balai &>/dev/null && command -v ollama &>/dev/null; then
     step "BalAI ready — try: balai \"how do I enable stealth mode\""
 fi
 
+# ── 12. Persona — apply sensible defaults for the intended use case ──
+# Skippable (just hit Enter) if you want the vanilla defaults.
+echo ""
+echo -e "${B}One last thing:${N} pick a persona so BalOS starts with sane defaults."
+echo -e "  ${C}1)${N} ${B}daily${N}       — balanced power, normal firewall, watch off"
+echo -e "  ${C}2)${N} ${B}laptop${N}      — battery saver + shield armor + Bluetooth off"
+echo -e "  ${C}3)${N} ${B}pentest${N}     — shield normal, watch on, BlackArch surfaced"
+echo -e "  ${C}4)${N} ${B}paranoid${N}    — shield fortress + stealth on + watch critical"
+echo -e "  ${C}5)${N} ${B}(skip)${N}      — leave defaults alone"
+persona=$(ask "choose 1-5 [5]:")
+persona="${persona:-5}"
+
+case "$persona" in
+    1|daily)
+        command -v balsaver  &>/dev/null && balsaver --balanced &>/dev/null || true
+        command -v balshield &>/dev/null && balshield normal    &>/dev/null || true
+        step "persona: daily (balanced + shield normal)"
+        ;;
+    2|laptop)
+        command -v balsaver  &>/dev/null && balsaver            &>/dev/null || true
+        command -v balshield &>/dev/null && balshield armor     &>/dev/null || true
+        rfkill block bluetooth 2>/dev/null || true
+        step "persona: laptop (saver + shield armor + bt off)"
+        ;;
+    3|pentest)
+        command -v balshield &>/dev/null && balshield normal    &>/dev/null || true
+        command -v balwatch  &>/dev/null && balwatch  start     &>/dev/null || true
+        step "persona: pentest (shield normal + balwatch on)"
+        ;;
+    4|paranoid)
+        command -v balshield  &>/dev/null && balshield fortress &>/dev/null || true
+        command -v balstealth &>/dev/null && balstealth on      &>/dev/null || true
+        command -v balwatch   &>/dev/null && balwatch  start    &>/dev/null || true
+        touch /etc/balos/watch-ai-explain.on 2>/dev/null || true
+        step "persona: paranoid (fortress + stealth + watch + AI-explain)"
+        ;;
+    *)
+        step "persona: skipped — defaults unchanged"
+        ;;
+esac
+
 cat << EOF
 
 ${G}${B}╔════════════════════════════════════════╗${N}

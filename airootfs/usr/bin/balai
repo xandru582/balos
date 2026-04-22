@@ -219,7 +219,33 @@ extract_command() {
 # the model so it answers with awareness of the user's real situation
 # ("my battery" → knows you're on 14%, etc.). Everything is read-only
 # and best-effort; individual failures are swallowed.
+# 2-second memoized cache for gather_ctx.
+# Rationale: sequences like `balai tip` → `balai doctor` → `balai "…"`
+# used to re-probe /sys, /proc, iwgetid, and ollama four times in a
+# couple of seconds. With the cache, only the first call pays the cost
+# (~60-120 ms); subsequent calls inside the TTL return instantly.
+# Per-user cache file (writable by owner only), living under $XDG_RUNTIME_DIR
+# when available so it's gone on logout.
+GATHER_CTX_TTL="${BALAI_CTX_TTL:-2}"
+_ctx_cache_file() {
+    local base="${XDG_RUNTIME_DIR:-/tmp}"
+    [[ -d "$base" && -w "$base" ]] || base="/tmp"
+    printf '%s/balai-ctx-%s' "$base" "$(id -u)"
+}
+
 gather_ctx() {
+    local cache; cache=$(_ctx_cache_file)
+    if [[ -r "$cache" ]]; then
+        # portable mtime-diff via stat; accept both GNU (-c %Y) and BSD (-f %m)
+        local mtime now
+        mtime=$(stat -c %Y "$cache" 2>/dev/null || stat -f %m "$cache" 2>/dev/null || echo 0)
+        now=$(date +%s)
+        if (( now - mtime < GATHER_CTX_TTL )); then
+            cat "$cache"
+            return 0
+        fi
+    fi
+
     local out=""
     local line
 
@@ -307,6 +333,9 @@ gather_ctx() {
     # Kernel
     line=$(uname -r 2>/dev/null)
     [[ -n "$line" ]] && out+="kernel: $line"$'\n'
+
+    # Write cache best-effort; ignore ENOSPC / read-only FS.
+    ( umask 077; printf '%s' "$out" > "$cache" ) 2>/dev/null || true
 
     printf '%s' "$out"
 }

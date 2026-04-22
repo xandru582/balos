@@ -138,8 +138,19 @@ Environment="OLLAMA_HOST=127.0.0.1:11434"
 # Disable ollama.com cloud and telemetry.
 Environment="OLLAMA_NO_CLOUD=true"
 Environment="OLLAMA_ORIGINS=http://localhost,http://127.0.0.1"
-# Keep model loaded in RAM for 5 min after last request (fast follow-ups).
-Environment="OLLAMA_KEEP_ALIVE=5m"
+# Keep model loaded in RAM for 15 min after last request. Cold-start for
+# Qwen2.5-1.5B is ~4 s; sequences like `balai tip` → `balai doctor` used
+# to pay it twice in quick succession. 15m covers an average session.
+Environment="OLLAMA_KEEP_ALIVE=15m"
+# Cap parallel requests to 1 — this box might also be gaming; we'd
+# rather the single request run fast than two compete.
+Environment="OLLAMA_NUM_PARALLEL=1"
+# Only one model resident at a time (saves 1-4 GB RAM when people
+# experiment with a 3B alongside the default 1.5B).
+Environment="OLLAMA_MAX_LOADED_MODELS=1"
+# Accept requests only from the loopback interface. Belt-and-braces
+# complement to OLLAMA_HOST=127.0.0.1.
+Environment="OLLAMA_ORIGINS=http://localhost,http://127.0.0.1,http://[::1]"
 DROPIN
 
 # ── Wordlists: stable symlink so balhack / balrecon hints resolve ──
