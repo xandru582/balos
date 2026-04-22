@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# balai-pacman-summary — invoked by the pacman post-transaction hook.
+# Reads the list of target packages on stdin and asks balai to produce
+# a short operator summary (one paragraph). Silent unless opted-in via
+# /etc/balos/pacman-ai-summary.on.
+set -uo pipefail
+
+# Opt-in only. Hook is always installed but guarded here so a fresh
+# system doesn't get AI-narrated upgrades unless asked.
+[[ -e /etc/balos/pacman-ai-summary.on ]] || exit 0
+
+# Don't block the upgrade UI if ollama isn't reachable.
+command -v balai &>/dev/null || exit 0
+if ! curl -fsS --max-time 2 http://127.0.0.1:11434/api/tags &>/dev/null; then
+    exit 0
+fi
+
+# Collect target list (one name per line, possibly with versions).
+targets=$(cat)
+[[ -z "$targets" ]] && exit 0
+
+count=$(echo "$targets" | wc -l)
+# For very large upgrades, truncate so we don't blow the context window.
+truncated=$(echo "$targets" | head -80)
+
+# Check for .pacnew files (config divergences the user must resolve).
+pacnews=$(find /etc -name '*.pacnew' -newer /var/log/pacman.log 2>/dev/null | head -20)
+
+{
+    echo "────────────────────────────────────────"
+    echo "  BalAI · post-upgrade summary"
+    echo "────────────────────────────────────────"
+    timeout 30 balai << EOF 2>/dev/null
+Summarize this pacman transaction for an operator in ONE short paragraph.
+Focus on: (a) anything security-sensitive (kernel, glibc, openssl, systemd,
+nftables, suricata, tor), (b) any .pacnew files that need merging, (c) any
+daemons worth restarting. Be terse. No bullet points.
+
+Packages (${count} total, first 80 shown):
+${truncated}
+
+.pacnew files found:
+${pacnews:-(none)}
+EOF
+    echo ""
+} >&2
+
+exit 0

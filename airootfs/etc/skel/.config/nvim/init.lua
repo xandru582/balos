@@ -197,3 +197,98 @@ map('v', '<', '<gv'); map('v', '>', '>gv')
 
 -- Terminal toggle
 map('n', '<leader>t', '<cmd>split | resize 12 | terminal<cr>', { desc = 'Terminal' })
+
+-- ═══ BalAI integration ══════════════════════════════════════════════
+-- Lightweight wrapper around the `balai` CLI. Works offline.
+-- Commands:
+--   :BalAI ask        ask a question (prompt)
+--   :BalAI cmd        generate a shell command from intent
+--   :BalAI explain    explain current buffer / selection
+--   :BalAI fix        diagnose an error (current buffer / :messages)
+-- Default bindings:
+--   <leader>ae        explain buffer (normal) / explain selection (visual)
+--   <leader>ac        :BalAI cmd (prompts for intent)
+--   <leader>aa        :BalAI ask (prompts for question)
+--   <leader>af        :BalAI fix (explain :messages)
+local function balai_run(subcmd, stdin_text, on_done)
+    local title = 'BalAI · ' .. subcmd
+    vim.cmd('botright 12split | enew')
+    vim.bo.buftype = 'nofile'
+    vim.bo.bufhidden = 'wipe'
+    vim.bo.swapfile = false
+    vim.wo.wrap = true
+    vim.api.nvim_buf_set_name(0, title)
+    local buf = vim.api.nvim_get_current_buf()
+    local function append(data)
+        if not data then return end
+        for _, line in ipairs(data) do
+            vim.api.nvim_buf_set_lines(buf, -1, -1, false, { line })
+        end
+        vim.cmd('normal! G')
+    end
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, { '▸ balai ' .. subcmd, '' })
+    local cmd
+    if subcmd == 'explain' then
+        cmd = { 'balai', 'explain' }
+    elseif subcmd == 'fix' then
+        cmd = { 'balai', 'fix' }
+    elseif subcmd == 'ask' then
+        cmd = { 'balai', stdin_text or '' }
+        stdin_text = nil
+    elseif subcmd == 'cmd' then
+        cmd = { 'balai', 'cmd', stdin_text or '' }
+        stdin_text = nil
+    else
+        vim.notify('balai: unknown subcmd ' .. subcmd, vim.log.levels.ERROR)
+        return
+    end
+    local job = vim.fn.jobstart(cmd, {
+        stdout_buffered = false,
+        on_stdout = function(_, data) vim.schedule(function() append(data) end) end,
+        on_stderr = function(_, data) vim.schedule(function() append(data) end) end,
+        on_exit = function() if on_done then vim.schedule(on_done) end end,
+    })
+    if stdin_text and stdin_text ~= '' then
+        vim.fn.chansend(job, stdin_text)
+        vim.fn.chanclose(job, 'stdin')
+    end
+end
+
+local function visual_selection()
+    local s = vim.fn.getpos("'<"); local e = vim.fn.getpos("'>")
+    local lines = vim.fn.getline(s[2], e[2])
+    if #lines == 0 then return '' end
+    lines[#lines] = string.sub(lines[#lines], 1, e[3])
+    lines[1] = string.sub(lines[1], s[3])
+    return table.concat(lines, '\n')
+end
+
+vim.api.nvim_create_user_command('BalAI', function(opts)
+    local sub = opts.fargs[1] or 'ask'
+    local rest = table.concat(vim.list_slice(opts.fargs, 2), ' ')
+    if sub == 'explain' then
+        local text
+        if opts.range == 2 then
+            text = visual_selection()
+        else
+            text = table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), '\n')
+        end
+        balai_run('explain', text)
+    elseif sub == 'fix' then
+        balai_run('fix', rest ~= '' and rest or nil)
+    elseif sub == 'cmd' then
+        if rest == '' then rest = vim.fn.input('intent: ') end
+        if rest ~= '' then balai_run('cmd', rest) end
+    elseif sub == 'ask' or sub == 'q' then
+        if rest == '' then rest = vim.fn.input('? ') end
+        if rest ~= '' then balai_run('ask', rest) end
+    else
+        vim.notify('usage: :BalAI {ask|cmd|explain|fix} [...]', vim.log.levels.WARN)
+    end
+end, { nargs = '*', range = true, desc = 'BalAI offline assistant' })
+
+map('n', '<leader>ae', '<cmd>BalAI explain<cr>',  { desc = 'BalAI: explain buffer' })
+map('v', '<leader>ae', ':BalAI explain<cr>',       { desc = 'BalAI: explain selection' })
+map('n', '<leader>ac', ':BalAI cmd<cr>',           { desc = 'BalAI: generate command' })
+map('n', '<leader>aa', ':BalAI ask<cr>',           { desc = 'BalAI: ask' })
+map('n', '<leader>af', ':BalAI fix<cr>',           { desc = 'BalAI: fix' })

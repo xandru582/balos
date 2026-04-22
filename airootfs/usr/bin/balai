@@ -213,6 +213,129 @@ extract_command() {
     return 1
 }
 
+# ─── context gathering ─────────────────────────────────────────
+# Collects a SHORT summary of current system state that can be fed to
+# the model so it answers with awareness of the user's real situation
+# ("my battery" → knows you're on 14%, etc.). Everything is read-only
+# and best-effort; individual failures are swallowed.
+gather_ctx() {
+    local out=""
+    local line
+
+    # Power profile (bal's doing)
+    if [[ -r /var/lib/balos/power-profile ]]; then
+        line=$(cat /var/lib/balos/power-profile 2>/dev/null)
+        [[ -n "$line" ]] && out+="power-profile: $line"$'\n'
+    fi
+
+    # Firewall tier
+    if [[ -r /var/lib/balos/shield-tier ]]; then
+        line=$(cat /var/lib/balos/shield-tier 2>/dev/null)
+        [[ -n "$line" ]] && out+="firewall: $line"$'\n'
+    elif need nft; then
+        # Cheap probe: is nftables loaded at all?
+        sudo -n nft list ruleset 2>/dev/null | grep -q 'chain input' && out+="firewall: nftables loaded"$'\n'
+    fi
+
+    # Stealth
+    if systemctl is-active tor &>/dev/null; then
+        out+="tor: active"$'\n'
+    fi
+    if systemctl is-active dnscrypt-proxy &>/dev/null; then
+        out+="dns: dnscrypt (DoH)"$'\n'
+    fi
+
+    # VPN (WireGuard)
+    if ip link show wg0 &>/dev/null; then
+        out+="vpn: wg0 up"$'\n'
+    fi
+
+    # Default iface + IP
+    local iface ip4
+    iface=$(ip -o route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+    if [[ -n "$iface" ]]; then
+        ip4=$(ip -o -4 addr show "$iface" 2>/dev/null | awk '{print $4}' | head -1)
+        out+="net: ${iface} ${ip4:-no-ipv4}"$'\n'
+    fi
+
+    # WiFi SSID
+    local ssid
+    ssid=$(iwgetid -r 2>/dev/null) || ssid=""
+    [[ -n "$ssid" ]] && out+="wifi-ssid: $ssid"$'\n'
+
+    # Battery
+    if [[ -r /sys/class/power_supply/BAT0/capacity ]]; then
+        local pct status
+        pct=$(cat /sys/class/power_supply/BAT0/capacity 2>/dev/null)
+        status=$(cat /sys/class/power_supply/BAT0/status 2>/dev/null)
+        out+="battery: ${pct}% ${status}"$'\n'
+    fi
+
+    # CPU governor
+    if [[ -r /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor ]]; then
+        line=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null)
+        out+="cpu-governor: $line"$'\n'
+    fi
+
+    # Uptime + load
+    line=$(uptime 2>/dev/null | sed -E 's/.*up ([^,]+), .*load average: (.*)/up \1, load \2/')
+    [[ -n "$line" ]] && out+="system: $line"$'\n'
+
+    # Memory
+    if need free; then
+        line=$(free -h 2>/dev/null | awk '/^Mem:/{printf "%s used / %s total", $3, $2}')
+        [[ -n "$line" ]] && out+="mem: $line"$'\n'
+    fi
+
+    # Disk on root
+    line=$(df -h / 2>/dev/null | awk 'NR==2{printf "%s used / %s (%s)", $3, $2, $5}')
+    [[ -n "$line" ]] && out+="disk /: $line"$'\n'
+
+    # ollama running?
+    if curl -fsS --max-time 1 "${OLLAMA_URL}/api/tags" &>/dev/null; then
+        out+="ollama: up (${MODEL})"$'\n'
+    fi
+
+    # Kernel
+    line=$(uname -r 2>/dev/null)
+    [[ -n "$line" ]] && out+="kernel: $line"$'\n'
+
+    printf '%s' "$out"
+}
+
+# Decide if a user query likely needs context injection. Cheap regex —
+# we'd rather inject unnecessarily than miss a "what's my battery" case.
+# Note: uses `tr` for lowercasing instead of ${var,,} so this works under
+# bash 3.x too (important for macOS dev; target BalOS is bash 5).
+needs_ctx() {
+    local q
+    q=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+    [[ "$q" =~ (my|current|right\ now|actual|whats?|what\ is|how\ (many|much)\ ).*(battery|cpu|ram|memory|disk|firewall|shield|vpn|wifi|ssid|tor|stealth|power|profile|kernel|uptime|ip|iface|interface|governor|temp|load) ]] || \
+    [[ "$q" =~ (status|am\ i|are\ we).*(connected|protected|safe|stealth|online|vpn|tor|on\ battery|plugged) ]] || \
+    [[ "$q" =~ ^(status|where|which) ]]
+}
+
+# Wrap a prompt with an optional [SYSTEM CONTEXT] block.
+# Args: prompt  (reads $BALAI_CTX_MODE: auto|always|never)
+with_ctx() {
+    local prompt="$1"
+    local mode="${BALAI_CTX_MODE:-auto}"
+    case "$mode" in
+        never) printf '%s' "$prompt"; return ;;
+        always) ;;
+        auto|*)
+            needs_ctx "$prompt" || { printf '%s' "$prompt"; return; }
+            ;;
+    esac
+    local ctx
+    ctx=$(gather_ctx)
+    if [[ -z "$ctx" ]]; then
+        printf '%s' "$prompt"
+    else
+        printf 'Current BalOS system state:\n%s\nUser question: %s' "$ctx" "$prompt"
+    fi
+}
+
 # ─── subcommands ─────────────────────────────────────────────────
 
 cmd_chat() {
@@ -235,7 +358,9 @@ cmd_chat() {
             /help)  echo "Commands: /clear /model /help  |  exit"; continue ;;
         esac
         echo -ne "${C}${B}bal ▸${N} "
-        stream_chat "$q"
+        local p
+        p=$(with_ctx "$q")
+        stream_chat "$p"
         echo ""
     done
 }
@@ -243,7 +368,24 @@ cmd_chat() {
 cmd_once() {
     ensure_ollama
     ensure_model
-    stream_chat "$*"
+    local prompt
+    prompt=$(with_ctx "$*")
+    stream_chat "$prompt"
+}
+
+# Dump the current system context as the model sees it (useful for the
+# user to audit what balai is feeding its prompt with).
+cmd_ctx() {
+    local ctx
+    ctx=$(gather_ctx)
+    if [[ -z "$ctx" ]]; then
+        echo "(no context probes succeeded)"
+    else
+        echo -e "${M}${B}balai — current system context${N}"
+        echo -e "${D}(this gets prepended automatically when your question mentions 'my …' etc.)${N}"
+        echo ""
+        printf '%s' "$ctx"
+    fi
 }
 
 cmd_cmd() {
@@ -423,6 +565,7 @@ ${B}USAGE${N}
   balai cmd  "<intent>"          ${D}# generate command, confirm, run${N}
   balai explain <file|--last>    ${D}# explain file or last command${N}
   balai fix  [error text]        ${D}# diagnose + suggest fix${N}
+  balai ctx                      ${D}# show system context balai sees${N}
   balai model [list|pull|rm]     ${D}# manage local models${N}
   balai status                   ${D}# service + model health${N}
   balai setup                    ${D}# first-run: enable service + pull model${N}
@@ -430,6 +573,7 @@ ${B}USAGE${N}
 ${B}ENV${N}
   BALAI_MODEL=<name>           ${D}# override default model (e.g. qwen2.5:3b-instruct-q4_K_M)${N}
   BALAI_SYSTEM_PROMPT=<path>   ${D}# override system prompt file${N}
+  BALAI_CTX_MODE=auto|always|never ${D}# context injection (default: auto)${N}
   OLLAMA_HOST=host:port
 
 ${B}EXAMPLES${N}
@@ -450,6 +594,7 @@ case "$CMD" in
     cmd|do|run|gen)       cmd_cmd "$@" ;;
     explain|exp|why)      cmd_explain "$@" ;;
     fix|err|error)        cmd_fix "$@" ;;
+    ctx|context)          cmd_ctx ;;
     setup|init)           cmd_setup ;;
     status|health)        cmd_status ;;
     model|models)         cmd_model "$@" ;;

@@ -140,6 +140,13 @@ if ! command -v starship &>/dev/null; then
 %F{green}╰─%F{green}▶%f '
 fi
 
+# ── System-wide BalOS zsh drop-ins (balai integration, etc.) ────
+if [[ -d /etc/zsh/zshrc.d ]]; then
+    for f in /etc/zsh/zshrc.d/*.zsh(N); do
+        [[ -r "$f" ]] && source "$f"
+    done
+fi
+
 # ── One-shot greet on fresh login ───────────────────────────────
 if [[ -z "$BALOS_GREETED" && -o interactive ]]; then
     export BALOS_GREETED=1

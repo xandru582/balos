@@ -1,0 +1,24 @@
+# BalOS — optional post-transaction AI summary.
+#
+# Runs AFTER every pacman transaction that installs/upgrades/removes
+# real packages. The hook just invokes `balai-pacman-summary`, which
+# is a very small script that pulls the .pacnew diff list + changed
+# daemons and asks balai to produce a ONE-PARAGRAPH operator summary.
+#
+# OFF by default. Enable by creating /etc/balos/pacman-ai-summary.on
+#   (e.g. via  bal init  or  sudo touch /etc/balos/pacman-ai-summary.on)
+# This keeps install/upgrade noise low for people who don't want it.
+
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Operation = Remove
+Type = Package
+Target = *
+
+[Action]
+Description = BalAI post-upgrade summary (if enabled)...
+When = PostTransaction
+Exec = /usr/bin/balai-pacman-summary
+AbortOnFail = No
+NeedsTargets

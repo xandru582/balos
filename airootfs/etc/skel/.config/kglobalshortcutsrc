@@ -1,0 +1,13 @@
+# KDE Plasma global keyboard shortcuts — shipped defaults for BalOS
+# Format: <ShortcutName>=<ActiveShortcut>,<DefaultShortcut>,<DisplayName>
+# Meta=Super key, Ctrl/Alt/Shift as usual.
+
+[balai.desktop]
+_k_friendly_name=BalAI
+_launch=Meta+A,Meta+A,BalAI · offline assistant
+ask=Meta+Shift+A,Meta+Shift+A,BalAI · ask a question
+cmd=Meta+Ctrl+A,Meta+Ctrl+A,BalAI · generate command
+
+[bal.desktop]
+_k_friendly_name=Bal menu
+_launch=Meta+B,Meta+B,Bal menu (fzf)

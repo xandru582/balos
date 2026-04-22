@@ -1,0 +1,18 @@
+[Desktop Entry]
+Type=Service
+X-KDE-ServiceTypes=KonqPopupMenu/Plugin
+MimeType=all/all;
+Actions=BalAIExplain;BalAIAsk;
+
+X-KDE-Priority=TopLevel
+X-KDE-Submenu=BalAI
+
+[Desktop Action BalAIExplain]
+Name=Explain with BalAI
+Icon=help-about
+Exec=kitty --class=balai-explain --hold -- balai explain %f
+
+[Desktop Action BalAIAsk]
+Name=Ask BalAI about this file…
+Icon=system-help
+Exec=sh -c 'q=$(kdialog --inputbox "Ask BalAI about %f:") && [ -n "$q" ] && kitty --class=balai-ask --hold -- sh -c "balai \"File: %f. $q\""'

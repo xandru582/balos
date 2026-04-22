@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=BalAI ask
+GenericName=Ask the offline assistant
+Comment=Pose a question to the local Qwen2.5 assistant
+Icon=system-help
+# Takes a question on the command line and opens a terminal with the answer.
+Exec=kitty --class=balai-ask --hold -- balai %U
+Terminal=false
+Categories=Utility;
+Keywords=ai;ask;question;help;
+NoDisplay=true
+StartupWMClass=balai-ask

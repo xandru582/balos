@@ -138,6 +138,16 @@ USER_HOME="/home/${USERNAME}"
 mkdir -p "${USER_HOME}/.config/balos"
 chown -R "${USERNAME}:${USERNAME}" "${USER_HOME}/.config/balos"
 
+# ── 11. BalAI (offline LLM) — verify + warm cache ────────────────
+if command -v balai &>/dev/null && command -v ollama &>/dev/null; then
+    # Enable the service (idempotent).
+    systemctl enable --now ollama &>/dev/null || true
+    # Pre-warm model into RAM — makes the first real query snappy.
+    # Non-fatal: balai works even if this fails.
+    (timeout 30 balai status &>/dev/null) || true
+    step "BalAI ready — try: balai \"how do I enable stealth mode\""
+fi
+
 cat << EOF
 
 ${G}${B}╔════════════════════════════════════════╗${N}
@@ -150,6 +160,8 @@ ${G}${B}╚═══════════════════════
     ${C}reboot${N}                    — enter your new session
     ${C}bal status${N}                — see current profile
     ${C}bal hack recon${N}            — fire up a pentest workspace
+    ${C}balai${N}                     — offline AI assistant (ask anything)
+    ${C}? "how do I…"${N}             — shell shortcut to BalAI
     ${C}bal kernel build${N}          — compile custom BalKernel (~45 min)
 
   ${D}Keep your keys safe. Hack responsibly.${N}

@@ -1,0 +1,25 @@
+[Desktop Entry]
+Type=Application
+Name=BalAI
+GenericName=Offline AI Assistant
+Comment=Local Qwen2.5-1.5B chat — 100% offline
+Icon=system-help
+Exec=kitty --class=balai-chat --title="BalAI" -- balai chat
+Terminal=false
+Categories=Utility;Development;ConsoleOnly;
+Keywords=ai;assistant;llm;chat;ollama;qwen;
+StartupWMClass=balai-chat
+
+Actions=ask;cmd;status;
+
+[Desktop Action ask]
+Name=Ask a question
+Exec=sh -c 'kdialog --inputbox "Ask BalAI:" > /tmp/balai-q && kitty --class=balai-chat --title="BalAI" -- balai "$(cat /tmp/balai-q)" --hold'
+
+[Desktop Action cmd]
+Name=Generate a command from intent
+Exec=sh -c 'kdialog --inputbox "Intent:" > /tmp/balai-i && kitty --class=balai-chat --title="BalAI" -- balai cmd "$(cat /tmp/balai-i)"'
+
+[Desktop Action status]
+Name=Check BalAI status
+Exec=kitty --class=balai-chat --title="BalAI status" --hold -- balai status

@@ -172,5 +172,27 @@ case "$CMD" in
     ids|suricata)            exec balids "$@" ;;
     version|-v|--version)    echo "BalOS v${VERSION}" ;;
     help|-h|--help)          usage ;;
-    *)                       echo "Unknown command: $CMD"; echo ""; usage; exit 1 ;;
+    *)
+        # Unknown command — if it looks like prose (multi-word, with spaces
+        # or a leading '?'), pipe it straight to balai as a question. This
+        # makes `bal how do I enable stealth` Just Work.
+        FULL="$CMD $*"
+        if [[ "$CMD" == \?* || "$FULL" =~ [[:space:]] || ${#CMD} -gt 15 ]]; then
+            command -v balai &>/dev/null && exec balai "${FULL# }"
+        fi
+        echo "Unknown command: $CMD"
+        echo ""
+        # Best-effort did-you-mean using bash globbing over /usr/bin/bal*.
+        shopt -s nullglob 2>/dev/null
+        for c in /usr/bin/bal*; do
+            name="${c##*/bal}"
+            [[ -z "$name" ]] && continue
+            case "$name" in
+                "$CMD"*|*"$CMD"*) echo "  did you mean:  bal ${name}  ?" ;;
+            esac
+        done
+        echo ""
+        usage
+        exit 1
+        ;;
 esac

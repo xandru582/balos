@@ -212,12 +212,65 @@ The error is "The connection to the server localhost:8080 was refused." …
 | `balai cmd "intent"`   | Intent → one shell command → confirm → run (destructive blocked)  |
 | `balai explain <file>` | Explain a file, `--last` command, or piped stdin                  |
 | `balai fix [error]`    | Diagnose an error and suggest a fix                               |
+| `balai ctx`            | Dump the live system context balai would inject into your query   |
 | `balai model list`     | Show locally installed models and sizes                           |
 | `balai model pull X`   | Download another Qwen/Llama/Phi model (needs network)             |
 | `balai status`         | Service health, active model, RAM                                 |
 | `balai setup`          | Re-run first-run setup (enable service, pull default model)       |
 
 `bal ?` is a shortcut: `bal ? "how do I…"` → `balai "how do I…"`.
+Even simpler: any unknown multi-word `bal` command is forwarded to balai, so
+`bal how do I enable stealth` Just Works.
+
+### System-wide integration
+
+BalAI is wired into every surface of the OS, not just its own CLI:
+
+- **Shell (zsh)** — sourced from `/etc/zsh/zshrc.d/50-balai.zsh`
+  - `?  <question>`     → one-shot query
+  - `?? <intent>`        → generate + confirm + run a command
+  - `wtf`                → explain the last command (or piped stdin)
+  - `Alt-E`              → widget: send current command line to `balai cmd`
+  - `Alt-?`              → widget: send current command line to `balai explain`
+  - `command_not_found`  → gentle hint suggesting `? <typed-command>`
+  - Opt-in post-fail hint (`export BALAI_ERROR_HINT=1`)
+- **Neovim** — `:BalAI {ask|cmd|explain|fix}` + buffer/selection support
+  - `<leader>ae`  → explain buffer (normal) / selection (visual)
+  - `<leader>ac`  → generate command (prompts for intent)
+  - `<leader>aa`  → ask (prompts for question)
+  - `<leader>af`  → fix
+- **KDE Plasma desktop**
+  - `Meta+A`          → launch BalAI chat (kitty, Matrix theme)
+  - `Meta+Shift+A`    → ask (prompts via `kdialog`)
+  - `Meta+Ctrl+A`     → generate a command
+  - `Meta+B`          → bal fzf menu
+  - App launcher      → "BalAI" entry with Ask/Command/Status actions
+- **Dolphin (file manager)** — right-click any file → **BalAI ▸ Explain** / **Ask…**
+- **`bal` CLI** — unknown multi-word commands auto-route to balai
+- **pacman** — optional post-transaction operator summary
+  (off by default; enable with `sudo touch /etc/balos/pacman-ai-summary.on`)
+- **`balinit`** — first-boot wizard warms the model so first real query is snappy
+
+### Context awareness
+
+When your question mentions *my*, *current*, *what's my…*, etc., balai auto-
+injects a short real-time snapshot of your system (firewall tier, power
+profile, battery, WiFi SSID, VPN state, CPU governor, RAM, disk, kernel)
+before sending the prompt. The model answers with that context instead of
+guessing.
+
+```bash
+$ balai ctx      # see exactly what gets injected
+$ balai "what's my battery"
+battery: 14% Discharging, profile: boost
+```
+```bash
+bal saver
+```
+Battery at 14% while on boost — switch to saver now.
+
+Force-on:  `BALAI_CTX_MODE=always balai "..."`
+Force-off: `BALAI_CTX_MODE=never  balai "..."`
 
 ### Privacy posture
 - No network calls at runtime (checked only when pulling a new model).

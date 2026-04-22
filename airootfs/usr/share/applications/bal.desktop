@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Bal menu
+GenericName=BalOS command picker
+Comment=Interactive fzf menu of all bal* subcommands
+Icon=utilities-terminal
+Exec=kitty --class=bal-menu --title="bal" -- bal
+Terminal=false
+Categories=Utility;System;
+Keywords=bal;balos;menu;
+StartupWMClass=bal-menu
