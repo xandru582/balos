@@ -433,10 +433,13 @@ python
 python-pip
 python-pipx
 python-virtualenv
-pyside6           # Qt6 bindings — required by /usr/bin/balai-chat GUI
-python-requests   # used by balai-chat to talk to ollama HTTP API
-python-dbus       # used by /usr/bin/balai-krunner (KRunner DBus plugin)
-python-gobject    # GLib main loop for the same
+# Qt6 bindings — required by /usr/bin/balai-chat GUI
+pyside6
+# used by balai-chat to talk to the ollama HTTP API
+python-requests
+# python-dbus + python-gobject power /usr/bin/balai-krunner (KRunner DBus plugin)
+python-dbus
+python-gobject
 nodejs
 npm
 yarn
