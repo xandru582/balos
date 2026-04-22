@@ -246,7 +246,15 @@ the same local model in a friendlier interface:
   firewall", etc, the GUI prepends a live snapshot before sending.
 - **Ollama reachability** indicator in the status bar.
 - **Keyboard shortcuts**: `Enter` send · `Shift+Enter` newline ·
-  `Ctrl+L` clear · `Ctrl+D` doctor · `Ctrl+T` tip · `Ctrl+K` context.
+  `Ctrl+L` clear · `Ctrl+D` doctor · `Ctrl+T` tip · `Ctrl+K` context ·
+  `Ctrl+S` export to markdown · `Ctrl+,` settings ·
+  `Ctrl+Shift+C` copy last code block · `Ctrl+Q` quit.
+- **Model dropdown** in the toolbar — live-populated from `ollama list`,
+  switch 1.5B ↔ 3B ↔ 7B without restarting.
+- **System tray icon** — close-to-tray, right-click for Ask / Doctor /
+  Quit, desktop notification when an answer finishes while hidden.
+- **Settings dialog** (Ctrl+,) — context mode (auto/always/never),
+  temperature, theme. Persisted via `QSettings`.
 
 Dependencies (pulled in by the ISO): `pyside6`, `python-requests`,
 `ollama`, `balai`.

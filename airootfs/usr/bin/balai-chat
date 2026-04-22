@@ -26,16 +26,17 @@ except Exception:  # pragma: no cover — on BalOS this is a hard dep
     requests = None
 
 from PySide6.QtCore import (
-    Qt, QTimer, QThread, Signal, Slot,
+    Qt, QTimer, QThread, Signal, Slot, QSettings,
 )
 from PySide6.QtGui import (
     QIcon, QKeySequence, QPalette, QColor,
-    QTextCursor, QShortcut,
+    QTextCursor, QShortcut, QAction, QGuiApplication,
 )
 from PySide6.QtWidgets import (
     QApplication, QHBoxLayout, QVBoxLayout, QWidget, QPushButton, QLabel,
-    QTextEdit, QPlainTextEdit, QFrame, QMainWindow,
-    QInputDialog, QStatusBar,
+    QTextEdit, QPlainTextEdit, QFrame, QMainWindow, QComboBox,
+    QInputDialog, QStatusBar, QDialog, QDialogButtonBox, QFormLayout,
+    QFileDialog, QMenu, QSystemTrayIcon, QDoubleSpinBox,
 )
 
 # ─── theme ──────────────────────────────────────────────────────────
@@ -241,11 +242,14 @@ class AIThread(QThread):
     done  = Signal(str)
     error = Signal(str)
 
-    def __init__(self, prompt: str, history: list[dict], parent=None):
+    def __init__(self, prompt: str, history: list[dict],
+                 model: str = MODEL, temperature: float = 0.2, parent=None):
         super().__init__(parent)
         self._prompt = prompt
         self._history = history  # list of {"role": "...", "content": "..."}
         self._stop = False
+        self._model = model
+        self._temperature = temperature
 
     def stop(self):
         self._stop = True
@@ -284,11 +288,11 @@ class AIThread(QThread):
             resp = requests.post(
                 f"{OLLAMA_URL}/api/chat",
                 json={
-                    "model": MODEL,
+                    "model": self._model,
                     "messages": messages,
                     "stream": True,
                     "options": {
-                        "temperature": 0.2,
+                        "temperature": self._temperature,
                         "top_p": 0.9,
                         "num_predict": 512,
                     },
@@ -750,6 +754,7 @@ class MainWindow(QMainWindow):
             ("💡 Tip",      self._do_tip,      "One-line proactive suggestion"),
             ("🧭 Context",  self._do_context,  "Show current system snapshot"),
             ("🧾 Remember", self._do_remember, "Add a persistent note"),
+            ("📋 Copy code", self._copy_last_code, "Copy last suggested code block (Ctrl+Shift+C)"),
             ("🧹 Clear",    self._do_clear,    "Clear this conversation"),
         ):
             b = QPushButton(label)
@@ -757,6 +762,15 @@ class MainWindow(QMainWindow):
             b.clicked.connect(slot)
             tb.addWidget(b)
         tb.addStretch(1)
+
+        # Model switcher — populated lazily from `ollama list`.
+        self.model_combo = QComboBox()
+        self.model_combo.setToolTip("Active model (from ollama list)")
+        self.model_combo.setMinimumWidth(220)
+        self.model_combo.addItem(MODEL)  # default before the list arrives
+        self.model_combo.currentTextChanged.connect(self._on_model_changed)
+        tb.addWidget(self.model_combo)
+
         self._stop_btn = QPushButton("■ Stop")
         self._stop_btn.setToolTip("Interrupt current response")
         self._stop_btn.setEnabled(False)
@@ -801,14 +815,33 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+D"), self, activated=self._do_doctor)
         QShortcut(QKeySequence("Ctrl+T"), self, activated=self._do_tip)
         QShortcut(QKeySequence("Ctrl+K"), self, activated=self._do_context)
-        QShortcut(QKeySequence("Ctrl+Q"), self, activated=self.close)
+        QShortcut(QKeySequence("Ctrl+S"), self, activated=self._export_conversation)
+        QShortcut(QKeySequence("Ctrl+,"), self, activated=self._open_settings)
+        QShortcut(QKeySequence("Ctrl+Shift+C"), self, activated=self._copy_last_code)
+        QShortcut(QKeySequence("Ctrl+Q"), self, activated=QApplication.quit)
 
         # Chat history for proper multi-turn (excluding system prompt).
         self.history: list[dict] = []
         self._thread: AIThread | None = None
+        self._model = MODEL
+        self._code_blocks: list[str] = []  # every fenced block ever produced
 
-        # Kick an initial ollama ping.
+        # Persistent UI settings (BALAI_CTX_MODE override, temperature).
+        self._settings = QSettings("BalOS", "balai-chat")
+        # Bootstrap env vars from saved settings so the worker thread sees them.
+        ctx_mode = self._settings.value("ctx_mode", "")
+        if ctx_mode:
+            os.environ["BALAI_CTX_MODE"] = ctx_mode
+
+        # System tray — only create if the platform supports it. On Wayland
+        # this is often a no-op but doesn't harm anything.
+        self._tray = None
+        if QSystemTrayIcon.isSystemTrayAvailable():
+            self._install_tray()
+
+        # Kick an initial ollama ping + populate model list.
         QTimer.singleShot(200, self._ping_ollama)
+        QTimer.singleShot(500, self._refresh_model_list)
         self._ping_timer = QTimer(self)
         self._ping_timer.timeout.connect(self._ping_ollama)
         self._ping_timer.start(15_000)
@@ -885,8 +918,13 @@ class MainWindow(QMainWindow):
         self.send_btn.setEnabled(False)
         self._stop_btn.setEnabled(True)
 
-        self._thread = AIThread(effective,
-                                history=self.history[:-1])  # exclude current user msg
+        temp = float(self._settings.value("temperature", 0.2))
+        self._thread = AIThread(
+            effective,
+            history=self.history[:-1],   # exclude current user msg
+            model=self._model,
+            temperature=temp,
+        )
         self._thread.chunk.connect(self.chat.append_ai_chunk)
         self._thread.done.connect(self._on_done)
         self._thread.error.connect(self._on_error)
@@ -900,7 +938,24 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def _on_done(self, full: str):
         rendered = self.chat.finish_ai()
-        self.history.append({"role": "assistant", "content": full or rendered})
+        full_text = full or rendered
+        self.history.append({"role": "assistant", "content": full_text})
+        # Extract and stash any fenced code blocks so "Copy code" works
+        # even several messages later.
+        for block in re.findall(r"```(?:\w+)?\s*\n?(.*?)```", full_text, re.DOTALL):
+            block = block.strip()
+            if block:
+                self._code_blocks.append(block)
+        # If the window is hidden (tray mode), show a notification so the
+        # user knows the answer is ready.
+        if self._tray is not None and not self.isVisible():
+            snippet = full_text.strip().splitlines()[0] if full_text.strip() else ""
+            self._tray.showMessage(
+                "BalAI — answer ready",
+                snippet[:120] + ("…" if len(snippet) > 120 else ""),
+                QSystemTrayIcon.Information,
+                4000,
+            )
         self.send_btn.setEnabled(True)
         self._stop_btn.setEnabled(False)
 
@@ -932,6 +987,183 @@ class MainWindow(QMainWindow):
             self.chat._append_html(_md_to_html(out))
         else:
             self.chat._append_html(f"<pre>{_html_escape(out)}</pre>")
+
+    # ── code-block clipboard ─────────────────────────────────────
+
+    def _copy_last_code(self):
+        if not self._code_blocks:
+            self.chat.add_system("no code block to copy yet", "warn")
+            return
+        code = self._code_blocks[-1]
+        QGuiApplication.clipboard().setText(code)
+        self.chat.add_system(f"copied {len(code)} chars to clipboard")
+
+    # ── model switcher ───────────────────────────────────────────
+
+    def _refresh_model_list(self):
+        """Query ollama for installed models and repopulate the combobox."""
+        try:
+            import requests
+            r = requests.get(f"{OLLAMA_URL}/api/tags", timeout=1.5)
+            if not r.ok:
+                return
+            names = [m.get("name", "") for m in r.json().get("models", [])]
+            names = [n for n in names if n]
+        except Exception:
+            return
+        if not names:
+            return
+        # Rebuild, preserving the current selection if present.
+        current = self.model_combo.currentText()
+        self.model_combo.blockSignals(True)
+        self.model_combo.clear()
+        self.model_combo.addItems(sorted(names))
+        target = current if current in names else self._model
+        if target in names:
+            self.model_combo.setCurrentText(target)
+        self.model_combo.blockSignals(False)
+
+    def _on_model_changed(self, name: str):
+        if not name or name == self._model:
+            return
+        self._model = name
+        self._sb_model.setText(f"model: {name}")
+        self.chat.add_system(f"switched to {name}")
+
+    # ── export conversation ──────────────────────────────────────
+
+    def _export_conversation(self):
+        if not self.history:
+            self.chat.add_system("nothing to export yet", "warn")
+            return
+        default = f"balai-{QGuiApplication.applicationPid()}.md"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export conversation", default,
+            "Markdown (*.md);;Text (*.txt);;All files (*)"
+        )
+        if not path:
+            return
+        lines = ["# BalAI conversation", ""]
+        for turn in self.history:
+            role = turn.get("role", "?")
+            content = turn.get("content", "")
+            if role == "user":
+                lines.append("## 👤 You")
+            elif role == "assistant":
+                lines.append("## 🧠 BalAI")
+            else:
+                lines.append(f"## {role}")
+            lines.append("")
+            lines.append(content)
+            lines.append("")
+        try:
+            with open(path, "w") as f:
+                f.write("\n".join(lines))
+            self.chat.add_system(f"exported to {path}")
+        except OSError as e:
+            self.chat.add_system(f"export failed: {e}", "err")
+
+    # ── settings dialog ──────────────────────────────────────────
+
+    def _open_settings(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("BalAI settings")
+        form = QFormLayout(dlg)
+
+        ctx_combo = QComboBox()
+        ctx_combo.addItems(["auto", "always", "never"])
+        ctx_combo.setCurrentText(self._settings.value("ctx_mode", "auto"))
+        form.addRow("Context injection:", ctx_combo)
+
+        temp_spin = QDoubleSpinBox()
+        temp_spin.setRange(0.0, 1.5)
+        temp_spin.setSingleStep(0.05)
+        temp_spin.setValue(float(self._settings.value("temperature", 0.2)))
+        form.addRow("Temperature:", temp_spin)
+
+        theme_combo = QComboBox()
+        theme_combo.addItems(["dark (default)", "darker"])
+        theme_combo.setCurrentText(self._settings.value("theme", "dark (default)"))
+        form.addRow("Theme:", theme_combo)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        form.addRow(buttons)
+
+        if dlg.exec() == QDialog.Accepted:
+            ctx_mode = ctx_combo.currentText()
+            self._settings.setValue("ctx_mode", ctx_mode)
+            self._settings.setValue("temperature", temp_spin.value())
+            self._settings.setValue("theme", theme_combo.currentText())
+            # Take effect immediately where possible.
+            os.environ["BALAI_CTX_MODE"] = ctx_mode
+            self.chat.add_system(
+                f"settings saved (ctx={ctx_mode}, temp={temp_spin.value():.2f})"
+            )
+
+    # ── system tray ──────────────────────────────────────────────
+
+    def _install_tray(self):
+        icon_path = None
+        for candidate in ("/usr/share/icons/hicolor/scalable/apps/balai.svg",
+                          "/usr/share/pixmaps/balai.svg",
+                          "/usr/share/pixmaps/balai.png"):
+            if os.path.isfile(candidate):
+                icon_path = candidate
+                break
+        icon = QIcon(icon_path) if icon_path else self.style().standardIcon(
+            self.style().StandardPixmap.SP_ComputerIcon)
+        self._tray = QSystemTrayIcon(icon, self)
+        self._tray.setToolTip("BalAI — offline assistant")
+        menu = QMenu()
+        act_show = QAction("Show / hide", self)
+        act_show.triggered.connect(self._toggle_visible)
+        menu.addAction(act_show)
+        act_ask = QAction("Ask something…", self)
+        act_ask.triggered.connect(self._tray_ask)
+        menu.addAction(act_ask)
+        act_doctor = QAction("Doctor", self)
+        act_doctor.triggered.connect(self._do_doctor)
+        menu.addAction(act_doctor)
+        menu.addSeparator()
+        act_quit = QAction("Quit", self)
+        act_quit.triggered.connect(QApplication.quit)
+        menu.addAction(act_quit)
+        self._tray.setContextMenu(menu)
+        self._tray.activated.connect(self._on_tray_click)
+        self._tray.show()
+
+    def _toggle_visible(self):
+        if self.isVisible():
+            self.hide()
+        else:
+            self.showNormal()
+            self.raise_()
+            self.activateWindow()
+
+    def _on_tray_click(self, reason):
+        if reason == QSystemTrayIcon.Trigger:
+            self._toggle_visible()
+
+    def _tray_ask(self):
+        text, ok = QInputDialog.getText(self, "Ask BalAI", "Your question:")
+        if ok and text.strip():
+            self.showNormal()
+            self.raise_()
+            self.activateWindow()
+            self._send(text.strip())
+
+    def closeEvent(self, ev):
+        # With tray available, "close" is hide-to-tray. Explicit Quit (tray
+        # menu / Ctrl+Q) exits. This matches the behaviour users expect
+        # from similar chat apps (Telegram, Element, …).
+        if self._tray is not None:
+            ev.ignore()
+            self.hide()
+        else:
+            super().closeEvent(ev)
 
     # ── ollama reachability indicator ────────────────────────────
 
