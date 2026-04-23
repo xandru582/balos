@@ -30,13 +30,31 @@ TARGET_USER="${SUDO_USER:-}"
 
 step "Retrofit de BalOS — usuario objetivo: ${TARGET_USER:-<ninguno>}"
 
-# ── Paquetes que faltan en una instalación "base" ───────────────────
-step "Instalando paquetes faltantes..."
-pacman -Sy --needed --noconfirm \
-    ollama \
-    zsh-autosuggestions zsh-syntax-highlighting zsh-history-substring-search \
-    rsync git reflector fastfetch kitty starship \
-    2>&1 | tail -5
+# ── Herramientas mínimas para el resto del script ──────────────────
+step "Instalando herramientas base del retrofit..."
+pacman -Sy --needed --noconfirm rsync git curl 2>&1 | tail -3
+
+# ── Asegurar [blackarch] en pacman.conf (para metasploit, etc.) ─────
+if ! grep -qE '^\[blackarch\]' /etc/pacman.conf; then
+    step "Añadiendo repo [blackarch]..."
+    pacman-key --init >/dev/null 2>&1 || true
+    TMP=$(mktemp)
+    if curl -fsSL https://blackarch.org/strap.sh -o "$TMP" && bash "$TMP"; then
+        echo "  → blackarch instalado"
+    else
+        warn "No pude instalar strap.sh (¿sin red?). Los paquetes de pentest no se instalarán."
+    fi
+    rm -f "$TMP"
+fi
+
+# ── Skippeo de paquetes compilados en [balos] (repo no disponible) ──
+# Esos 6 paquetes AUR los compila el Dockerfile y viven en /balos-repo
+# en el live. Desde una instalación vanilla no están accesibles.
+BALOS_REPO_PKGS=(auto-cpufreq proton-ge-custom-bin ananicy-cpp nohang heroic-games-launcher-bin undervolt)
+BALOS_REPO_AVAILABLE=false
+if grep -qE '^\[balos\]' /etc/pacman.conf && [[ -f /balos-repo/balos.db ]]; then
+    BALOS_REPO_AVAILABLE=true
+fi
 
 # ── Clonar los archivos del repo ────────────────────────────────────
 step "Clonando el repo en $WORKDIR..."
@@ -45,6 +63,30 @@ git clone -b "$REPO_BRANCH" --depth 1 https://github.com/xandru582/balos "$WORKD
 
 SRC="$WORKDIR/airootfs"
 [[ -d "$SRC/usr/bin" ]] || die "Contenido del repo inesperado ($SRC)"
+
+# ── Instalar los 480+ paquetes BalOS declarados en packages.x86_64 ──
+MANIFEST="$WORKDIR/packages.x86_64"
+if [[ -r "$MANIFEST" ]]; then
+    step "Instalando el stack completo de BalOS (~480 paquetes)..."
+    SKIP_RE='^(arch-install-scripts|mkinitcpio-archiso|mkinitcpio-nfs-utils|syslinux)$'
+    if ! $BALOS_REPO_AVAILABLE; then
+        SKIP_RE="$SKIP_RE|^($(IFS='|'; echo "${BALOS_REPO_PKGS[*]}"))$"
+        warn "Sin [balos] repo activo — saltando: ${BALOS_REPO_PKGS[*]}"
+    fi
+    mapfile -t MANIFEST_PKGS < <(
+        grep -vE '^\s*(#|$)' "$MANIFEST" | grep -vE "$SKIP_RE"
+    )
+    # pacman -S es idempotente con --needed; --noconfirm evita prompts.
+    # Si algún paquete falla (típicamente blackarch si la mirror está caída)
+    # no paramos el retrofit — seguimos con lo copiable.
+    pacman -S --needed --noconfirm "${MANIFEST_PKGS[@]}" 2>&1 | tail -5 \
+        || warn "pacman reportó errores — revisa arriba (suele ser [blackarch] o repos que faltan)."
+else
+    warn "packages.x86_64 no encontrado en el repo; instalando sólo lo crítico."
+    pacman -S --needed --noconfirm ollama zsh-autosuggestions \
+        zsh-syntax-highlighting zsh-history-substring-search \
+        fastfetch kitty starship reflector 2>&1 | tail -5
+fi
 
 # ── Lista de rutas a portar ─────────────────────────────────────────
 PATHS=(

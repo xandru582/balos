@@ -290,18 +290,42 @@ fi
 pacman -Syy 2>&1 | tail -5 | tee -a "$LOG" || die "pacman -Syy failed — see $LOG"
 
 log "Installing base system (pacstrap) — this takes a while..."
-BASE_PKGS=(base base-devel linux-zen linux-zen-headers linux-firmware
-    btrfs-progs efibootmgr networkmanager vim sudo
-    intel-ucode amd-ucode reflector git zsh kitty fastfetch
-    snapper snap-pac grub-btrfs inotify-tools
-    pipewire pipewire-pulse pipewire-alsa wireplumber
-    nftables tlp power-profiles-daemon powertop
-    plasma-meta sddm konsole dolphin ark kate firefox
-    dnscrypt-proxy usbguard age wireguard-tools
-    fzf ripgrep fd bat eza starship
-    zsh-autosuggestions zsh-syntax-highlighting zsh-history-substring-search
-    ollama
-)
+
+# Load the full BalOS package manifest (the SAME file mkarchiso used to
+# build this ISO) so the installed system gets the whole BalOS stack —
+# not a minimal subset. The Dockerfile stages this at build time.
+# A couple of packages are live-only and must be skipped on install:
+#   - arch-install-scripts / mkinitcpio-archiso / mkinitcpio-nfs-utils:
+#     used to build / boot the ISO, unneeded on target.
+#   - syslinux: BIOS bootloader used on the USB; target uses systemd-boot.
+MANIFEST=/usr/share/balos/packages.x86_64
+BASE_PKGS=()
+if [[ -r "$MANIFEST" ]]; then
+    while IFS= read -r raw; do
+        pkg="${raw%%#*}"
+        pkg="${pkg//[[:space:]]/}"
+        [[ -z "$pkg" ]] && continue
+        case "$pkg" in
+            arch-install-scripts|mkinitcpio-archiso|mkinitcpio-nfs-utils|syslinux) continue ;;
+        esac
+        BASE_PKGS+=("$pkg")
+    done < "$MANIFEST"
+    log "Loaded ${#BASE_PKGS[@]} packages from $MANIFEST"
+else
+    log "WARN: $MANIFEST missing — falling back to minimal KDE base"
+    BASE_PKGS=(base base-devel linux-zen linux-zen-headers linux-firmware
+        btrfs-progs efibootmgr networkmanager vim sudo
+        intel-ucode amd-ucode reflector git zsh kitty fastfetch
+        snapper snap-pac grub-btrfs inotify-tools
+        pipewire pipewire-pulse pipewire-alsa wireplumber
+        nftables tlp power-profiles-daemon powertop
+        plasma-meta sddm konsole dolphin ark kate firefox
+        dnscrypt-proxy usbguard age wireguard-tools
+        fzf ripgrep fd bat eza starship
+        zsh-autosuggestions zsh-syntax-highlighting zsh-history-substring-search
+        ollama
+    )
+fi
 
 case "$GPU_CHOICE" in
     nvidia) BASE_PKGS+=(nvidia-dkms nvidia-utils nvidia-settings libva-nvidia-driver) ;;
@@ -417,6 +441,15 @@ BALOS_PATHS=(
     /etc/pacman.d/hooks/zzz-balai-summary.hook
     # balai model pre-baked
     /var/lib/ollama/.ollama/models
+    # local [balos] repo (auto-cpufreq, proton-ge, etc.) — without this
+    # the installed /etc/pacman.conf has a dangling file:///balos-repo
+    # reference and every `pacman -Sy` prints errors.
+    /balos-repo
+    # pacman config so the installed system can pacman -Syu against
+    # [core] [extra] [multilib] [blackarch] [balos] exactly like the
+    # live did. The balos-repo copy above makes file:/// work.
+    /etc/pacman.conf
+    /etc/pacman.d/blackarch-mirrorlist
 )
 copied=0
 skipped=0

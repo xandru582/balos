@@ -76,9 +76,10 @@ CMD ["bash", "-c", "\
     set -e; \
     mkdir -p /build/profile/airootfs/root/kernel; \
     cp -r /build/profile/kernel/. /build/profile/airootfs/root/kernel/; \
-    mkdir -p /build/profile/airootfs/etc/pacman.d /build/profile/airootfs/balos-repo; \
+    mkdir -p /build/profile/airootfs/etc/pacman.d /build/profile/airootfs/balos-repo /build/profile/airootfs/usr/share/balos; \
     cp /etc/pacman.d/blackarch-mirrorlist /build/profile/airootfs/etc/pacman.d/blackarch-mirrorlist; \
     cp -a /balos-repo/. /build/profile/airootfs/balos-repo/; \
     cp /build/profile/pacman.conf /build/profile/airootfs/etc/pacman.conf; \
+    cp /build/profile/packages.x86_64 /build/profile/airootfs/usr/share/balos/packages.x86_64; \
     mkarchiso -v -w /tmp/balos-work -o /output /build/profile/; \
     echo '=== BALOS BUILD SUCCESS ==='"]
