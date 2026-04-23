@@ -232,7 +232,7 @@ BASE_PKGS=(base base-devel linux-zen linux-zen-headers linux-firmware
     snapper snap-pac grub-btrfs inotify-tools
     pipewire pipewire-pulse pipewire-alsa wireplumber
     nftables tlp power-profiles-daemon powertop
-    plasma sddm konsole dolphin ark kate firefox
+    plasma-meta sddm konsole dolphin ark kate firefox
     dnscrypt-proxy usbguard age wireguard-tools
     fzf ripgrep fd bat eza starship
 )
@@ -257,10 +257,23 @@ for p in $PROFILES; do
 done
 
 log "Packages to install: ${#BASE_PKGS[@]}"
+
+# Pre-flight: verify every package resolves in current repos BEFORE we
+# spend 20 minutes downloading. pacman -Sp prints one line per resolved
+# target; non-existent packages cause "error: target not found: <name>"
+# on stderr and a non-zero exit. Catch that early and tell the user
+# exactly what's missing.
+log "Checking that every package exists in the enabled repos..."
+if ! MISSING=$(pacman -Sp --print-format '%n' "${BASE_PKGS[@]}" 2>&1 >/dev/null); then
+    echo "${R}${B}Preflight failed — these packages do not resolve:${N}" | tee -a "$LOG"
+    echo "$MISSING" | tee -a "$LOG"
+    die "Fix the package list in $0 or add the missing repo."
+fi
+
 if ! pacstrap -K /mnt "${BASE_PKGS[@]}" 2>&1 | tee -a "$LOG"; then
     echo "" | tee -a "$LOG"
-    echo "${R}${B}── last 30 lines of /tmp/balos-install.log ──${N}" | tee -a "$LOG"
-    tail -30 "$LOG"
+    echo "${R}${B}── last 40 lines of /tmp/balos-install.log ──${N}" | tee -a "$LOG"
+    tail -40 "$LOG"
     die "pacstrap failed (full log at /tmp/balos-install.log)"
 fi
 
