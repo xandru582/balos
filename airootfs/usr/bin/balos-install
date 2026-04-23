@@ -419,7 +419,12 @@ editor no
 BOOT
 
 if [[ $USE_LUKS -eq 1 ]]; then
-    CMDLINE="rd.luks.name=\${LUKS_UUID}=balos_root root=/dev/mapper/balos_root rootflags=subvol=@ rw quiet splash mitigations=auto mem_sleep_default=deep nvme.noacpi=1"
+    # The legacy "encrypt" mkinitcpio hook (enabled above) expects
+    # cryptdevice=UUID=LUKS:NAME on the kernel cmdline. The newer
+    # rd.luks.name= syntax is only understood by the "sd-encrypt"
+    # hook. Mixing them leaves the root mapper never opened and the
+    # system drops straight into the initramfs emergency shell.
+    CMDLINE="cryptdevice=UUID=\${LUKS_UUID}:balos_root root=/dev/mapper/balos_root rootflags=subvol=@ rw quiet splash mitigations=auto mem_sleep_default=deep nvme.noacpi=1"
 else
     CMDLINE="root=UUID=\${ROOT_UUID} rootflags=subvol=@ rw quiet splash mitigations=auto mem_sleep_default=deep nvme.noacpi=1"
 fi
