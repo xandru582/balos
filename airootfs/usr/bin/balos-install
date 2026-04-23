@@ -203,9 +203,10 @@ umount /mnt
 
 BTRFS_OPTS="noatime,compress=zstd:2,ssd,space_cache=v2,discard=async"
 mount -o "${BTRFS_OPTS},subvol=@"          "$ROOT_DEV" /mnt
-mkdir -p /mnt/{boot,home,var,var/log,.snapshots,swap}
+mkdir -p /mnt/{boot,home,var,.snapshots,swap}
 mount -o "${BTRFS_OPTS},subvol=@home"      "$ROOT_DEV" /mnt/home
 mount -o "${BTRFS_OPTS},subvol=@var"       "$ROOT_DEV" /mnt/var
+mkdir -p /mnt/var/log
 mount -o "${BTRFS_OPTS},subvol=@log"       "$ROOT_DEV" /mnt/var/log
 mount -o "${BTRFS_OPTS},subvol=@snapshots" "$ROOT_DEV" /mnt/.snapshots
 mount -o "noatime,subvol=@swap"            "$ROOT_DEV" /mnt/swap
