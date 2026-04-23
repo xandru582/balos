@@ -6,11 +6,17 @@
 # funcione, sin esperar a un rebuild completo. Aplica los mismos fixes
 # que el PR #1:
 #
-#   1. Monta @log antes de crear /mnt/var/log  (fix del crash al montar)
-#   2. Habilita [multilib]                    (steam, wine-staging)
-#   3. Instala blackarch strap.sh             (metasploit, exploitdb, …)
-#   4. Refresca mirrorlist con reflector      (por si estaba vacía)
-#   5. Sincroniza bases de datos de pacman
+#   1. Monta @log antes de crear /mnt/var/log    (fix del crash al montar)
+#   2. Arregla la def de `?` y `??` en zsh       (glob NOMATCH)
+#   3. Habilita [multilib]                       (steam, wine-staging)
+#   4. Instala blackarch strap.sh                (metasploit, exploitdb, …)
+#   5. Refresca mirrorlist con reflector         (la live trae la mirrorlist
+#                                                 TODA comentada → pacstrap
+#                                                 falla con "failed to
+#                                                 retrieve some files")
+#   6. Parchea balos-install para que corra reflector él mismo antes de
+#      pacstrap y muestre el tail del log en caso de fallo.
+#   7. Sincroniza bases de datos de pacman
 #
 # Idempotente — puedes ejecutarlo las veces que quieras.
 #
@@ -42,8 +48,8 @@ umount -R /mnt 2>/dev/null || true
 swapoff -a 2>/dev/null || true
 cryptsetup close balos_root 2>/dev/null || true
 
-# ── 1. Parchea balos-install (bug del mount de @log) ─────────────────
-step "Parcheando $INSTALLER..."
+# ── 1a. Parchea balos-install (bug del mount de @log) ────────────────
+step "Parcheando $INSTALLER (bug @log)..."
 if grep -qF 'mkdir -p /mnt/{boot,home,var,var/log,.snapshots,swap}' "$INSTALLER"; then
     # Quita var/log del mkdir inicial (lo ocultaba el mount de @var)
     sed -i 's|mkdir -p /mnt/{boot,home,var,var/log,.snapshots,swap}|mkdir -p /mnt/{boot,home,var,.snapshots,swap}|' "$INSTALLER"
@@ -52,6 +58,62 @@ if grep -qF 'mkdir -p /mnt/{boot,home,var,var/log,.snapshots,swap}' "$INSTALLER"
     echo "  → parche de @log aplicado"
 else
     echo "  → ya estaba parcheado"
+fi
+
+# ── 1b. Parchea balos-install para que corra reflector antes de pacstrap
+step "Parcheando $INSTALLER (reflector pre-pacstrap)..."
+if ! grep -q "Refreshing mirrorlist via reflector" "$INSTALLER"; then
+    python3 - "$INSTALLER" <<'PY'
+import re, sys
+p = sys.argv[1]
+s = open(p).read()
+marker = 'log "Installing base system (pacstrap)'
+inject = '''log "Refreshing mirrorlist via reflector..."
+if command -v reflector &>/dev/null; then
+    reflector --latest 20 --protocol https --sort rate \\
+              --save /etc/pacman.d/mirrorlist 2>&1 | tail -3 | tee -a "$LOG" || \\
+        log "reflector failed — will rely on whatever mirrorlist exists"
+fi
+pacman -Syy 2>&1 | tail -5 | tee -a "$LOG" || die "pacman -Syy failed — no network?"
+
+'''
+if marker in s and 'Refreshing mirrorlist via reflector' not in s:
+    s = s.replace(marker, inject + marker, 1)
+    open(p, 'w').write(s)
+    print("  → reflector pre-pacstrap inyectado")
+else:
+    print("  → ya estaba (o marker no encontrado)")
+PY
+else
+    echo "  → ya estaba"
+fi
+
+# ── 1c. Parchea balos-install para mostrar tail del log si pacstrap falla
+if grep -qF 'pacstrap -K /mnt "${BASE_PKGS[@]}" 2>&1 | tee -a "$LOG" >/dev/null || die "pacstrap failed"' "$INSTALLER"; then
+    python3 - "$INSTALLER" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+old = 'pacstrap -K /mnt "${BASE_PKGS[@]}" 2>&1 | tee -a "$LOG" >/dev/null || die "pacstrap failed"'
+new = '''log "Packages to install: ${#BASE_PKGS[@]}"
+if ! pacstrap -K /mnt "${BASE_PKGS[@]}" 2>&1 | tee -a "$LOG"; then
+    echo "" | tee -a "$LOG"
+    echo "${R}${B}── last 30 lines of /tmp/balos-install.log ──${N}" | tee -a "$LOG"
+    tail -30 "$LOG"
+    die "pacstrap failed (full log at /tmp/balos-install.log)"
+fi'''
+if old in s:
+    open(p, 'w').write(s.replace(old, new))
+    print("  → pacstrap ahora muestra log en fallo")
+PY
+fi
+
+# ── 1d. Parchea 50-balai.zsh (glob NOMATCH en `?`/`??`) ──────────────
+ZSH_BALAI=/etc/zsh/zshrc.d/50-balai.zsh
+if [[ -f "$ZSH_BALAI" ]] && grep -qE '^\? \(\)' "$ZSH_BALAI"; then
+    step "Parcheando $ZSH_BALAI (glob NOMATCH en ?/??)..."
+    sed -i "s|^? ()|function '?'|; s|^?? ()|function '??'|" "$ZSH_BALAI"
+    echo "  → parcheado"
 fi
 
 # ── 2. [multilib] ────────────────────────────────────────────────────

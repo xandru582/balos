@@ -213,6 +213,18 @@ mount -o "noatime,subvol=@swap"            "$ROOT_DEV" /mnt/swap
 mount "$P1" /mnt/boot
 
 # ─── 4. Base install ────────────────────────────────────────────
+# The live ISO ships /etc/pacman.d/mirrorlist with every server commented
+# (that's how pacman-mirrorlist is distributed). Without refreshing it
+# here, pacstrap fails on the very first DB sync — "failed to retrieve
+# some files" — because there's literally nowhere to fetch from.
+log "Refreshing mirrorlist via reflector..."
+if command -v reflector &>/dev/null; then
+    reflector --latest 20 --protocol https --sort rate \
+              --save /etc/pacman.d/mirrorlist 2>&1 | tail -3 | tee -a "$LOG" || \
+        log "reflector failed — will rely on whatever mirrorlist exists"
+fi
+pacman -Syy 2>&1 | tail -5 | tee -a "$LOG" || die "pacman -Syy failed — no network?"
+
 log "Installing base system (pacstrap) — this takes a while..."
 BASE_PKGS=(base base-devel linux-zen linux-zen-headers linux-firmware
     btrfs-progs efibootmgr networkmanager vim sudo
@@ -244,7 +256,13 @@ for p in $PROFILES; do
     esac
 done
 
-pacstrap -K /mnt "${BASE_PKGS[@]}" 2>&1 | tee -a "$LOG" >/dev/null || die "pacstrap failed"
+log "Packages to install: ${#BASE_PKGS[@]}"
+if ! pacstrap -K /mnt "${BASE_PKGS[@]}" 2>&1 | tee -a "$LOG"; then
+    echo "" | tee -a "$LOG"
+    echo "${R}${B}── last 30 lines of /tmp/balos-install.log ──${N}" | tee -a "$LOG"
+    tail -30 "$LOG"
+    die "pacstrap failed (full log at /tmp/balos-install.log)"
+fi
 
 # ─── 5. fstab ───────────────────────────────────────────────────
 genfstab -U /mnt >> /mnt/etc/fstab

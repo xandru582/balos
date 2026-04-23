@@ -57,6 +57,12 @@ systemctl enable thermald           2>/dev/null || true
 # auto-cpufreq not packaged — tlp + power-profiles-daemon handle this.
 systemctl enable fstrim.timer
 systemctl enable systemd-timesyncd
+# reflector.service is a oneshot — it populates /etc/pacman.d/mirrorlist
+# at boot once the network is up. Without it the live ISO ships with
+# every mirror commented out (that's how the pacman-mirrorlist package
+# distributes its file) and pacstrap/pacman -Sy explodes with "failed
+# to retrieve some files". The .timer keeps it fresh afterwards.
+systemctl enable reflector.service  2>/dev/null || true
 systemctl enable reflector.timer    2>/dev/null || true
 systemctl enable nftables
 systemctl enable dnscrypt-proxy
