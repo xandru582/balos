@@ -160,8 +160,32 @@ log() { echo -e "${C}[$(date +%H:%M:%S)]${N} $*" | tee -a "$LOG"; }
 die() { echo -e "${R}${B}FATAL:${N} $*" | tee -a "$LOG"; exit 1; }
 
 # ─── 1. Partition ───────────────────────────────────────────────
+# A previous failed attempt can leave the target disk "busy" — mounts
+# under /mnt, LUKS mapper still open, swap active on a partition, etc.
+# That makes wipefs abort with "Device or resource busy". Tear all of
+# that down before we touch the disk so the install is re-runnable.
+log "Releasing $DISK (cleanup of any previous attempt)..."
+umount -R /mnt 2>/dev/null || true
+swapoff -a 2>/dev/null || true
+cryptsetup close balos_root 2>/dev/null || true
+# Close any dm-crypt mapper whose underlying device lives on $DISK.
+for m in $(ls /dev/mapper 2>/dev/null); do
+    [[ "$m" == "control" ]] && continue
+    src=$(cryptsetup status "$m" 2>/dev/null | awk '/device:/ {print $2}')
+    [[ "$src" == "$DISK"* ]] && cryptsetup close "$m" 2>/dev/null || true
+done
+# Force-unmount anything still mounted from a partition of $DISK.
+for part in $(lsblk -lnpo NAME "$DISK" 2>/dev/null | tail -n +2); do
+    for mp in $(findmnt -nr -S "$part" -o TARGET 2>/dev/null); do
+        umount -R "$mp" 2>/dev/null || true
+    done
+done
+sync
+partprobe "$DISK" 2>/dev/null || true
+sleep 1
+
 log "Partitioning $DISK ..."
-wipefs -a "$DISK"
+wipefs -a "$DISK" || die "wipefs failed — $DISK still busy; reboot and try again"
 sgdisk --zap-all "$DISK"
 sgdisk -n 1:0:+1G  -t 1:ef00 -c 1:ESP   "$DISK"
 sgdisk -n 2:0:0    -t 2:8300 -c 2:BALOS "$DISK"
