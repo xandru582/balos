@@ -35,6 +35,14 @@ on:
         required: false
         default: 'false'
 
+# Every PR push should cancel the previous build on the same branch —
+# otherwise a rapid series of fix-up commits piles up 40-min runners.
+# Tag/release/cron builds use their own group so a dev push never
+# preempts them.
+concurrency:
+  group: build-iso-${{ github.event.pull_request.head.ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build:
     runs-on: ubuntu-latest

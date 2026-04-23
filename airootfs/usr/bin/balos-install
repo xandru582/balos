@@ -213,17 +213,55 @@ mount -o "noatime,subvol=@swap"            "$ROOT_DEV" /mnt/swap
 mount "$P1" /mnt/boot
 
 # ─── 4. Base install ────────────────────────────────────────────
+# Without network, reflector/pacman -Syy/pacstrap all fail with ugly DNS
+# errors. Detect and guide the user through nmtui instead of letting it
+# explode 15 minutes in.
+check_net() {
+    ping -c1 -W3 1.1.1.1 >/dev/null 2>&1 || return 1
+    getent hosts archlinux.org >/dev/null 2>&1 || return 2
+    return 0
+}
+
+log "Checking network connectivity..."
+if ! check_net; then
+    rc=$?
+    while ! check_net; do
+        if [[ $rc -eq 2 ]]; then
+            MSG="\nIP connectivity works but \Z1DNS resolution fails\Zn.\n\nLaunch nmtui to fix Wi-Fi, or cancel to abort."
+        else
+            MSG="\n\Z1No internet connection detected.\Zn\n\nBalOS needs internet to download ~3 GB of packages.\n\nLaunch nmtui to connect to Wi-Fi now?"
+        fi
+        if DIALOG --title " No network " --yesno "$MSG" 12 60; then
+            clear
+            if command -v nmtui >/dev/null 2>&1; then
+                nmtui
+            elif command -v iwctl >/dev/null 2>&1; then
+                echo "Launching iwctl. Run:  station wlan0 connect <SSID>  then exit."
+                iwctl
+            else
+                die "Neither nmtui nor iwctl available. Connect network manually (ip/iw/wpa_supplicant) and rerun."
+            fi
+            sleep 3
+            rc=0
+            check_net || rc=$?
+        else
+            die "Aborted — connect a network first, then rerun: sudo balos-install"
+        fi
+    done
+fi
+log "Network OK."
+
 # The live ISO ships /etc/pacman.d/mirrorlist with every server commented
 # (that's how pacman-mirrorlist is distributed). Without refreshing it
 # here, pacstrap fails on the very first DB sync — "failed to retrieve
 # some files" — because there's literally nowhere to fetch from.
 log "Refreshing mirrorlist via reflector..."
 if command -v reflector &>/dev/null; then
-    reflector --latest 20 --protocol https --sort rate \
+    timeout 90 reflector --latest 20 --protocol https --sort rate \
               --save /etc/pacman.d/mirrorlist 2>&1 | tail -3 | tee -a "$LOG" || \
         log "reflector failed — will rely on whatever mirrorlist exists"
 fi
-pacman -Syy 2>&1 | tail -5 | tee -a "$LOG" || die "pacman -Syy failed — no network?"
+pacman -Syy 2>&1 | tail -5 | tee -a "$LOG" || die "pacman -Syy failed — see $LOG"
 
 log "Installing base system (pacstrap) — this takes a while..."
 BASE_PKGS=(base base-devel linux-zen linux-zen-headers linux-firmware

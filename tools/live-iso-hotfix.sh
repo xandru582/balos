@@ -146,13 +146,29 @@ else
     echo "  → blackarch instalado"
 fi
 
-# ── 4. Mirrorlist ────────────────────────────────────────────────────
+# ── 4. Red ───────────────────────────────────────────────────────────
+step "Comprobando red..."
+net_ok() { ping -c1 -W3 1.1.1.1 >/dev/null 2>&1 && getent hosts archlinux.org >/dev/null 2>&1; }
+if ! net_ok; then
+    warn "No hay red (DNS falla). Lanzo nmtui — conéctate al WiFi y sal."
+    if command -v nmtui >/dev/null 2>&1; then
+        nmtui
+        sleep 2
+    else
+        warn "nmtui no está disponible. Conecta la red manualmente y vuelve a correr el script."
+        die "sin red"
+    fi
+    net_ok || die "Sigue sin red — conecta Wi-Fi/Ethernet y rearranca: sudo bash live-iso-hotfix.sh"
+fi
+echo "  → red OK"
+
+# ── 4b. Mirrorlist ───────────────────────────────────────────────────
 step "Refrescando mirrorlist (reflector)..."
 if command -v reflector >/dev/null 2>&1; then
-    reflector --latest 20 --protocol https --sort rate \
+    timeout 90 reflector --latest 20 --protocol https --sort rate \
               --save /etc/pacman.d/mirrorlist 2>/dev/null \
         && echo "  → OK" \
-        || warn "reflector falló — si /etc/pacman.d/mirrorlist ya tiene servers sin # saltando esto está bien"
+        || warn "reflector falló — seguimos con la mirrorlist existente"
 else
     warn "reflector no instalado — saltando"
 fi
