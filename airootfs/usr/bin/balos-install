@@ -299,6 +299,8 @@ BASE_PKGS=(base base-devel linux-zen linux-zen-headers linux-firmware
     plasma-meta sddm konsole dolphin ark kate firefox
     dnscrypt-proxy usbguard age wireguard-tools
     fzf ripgrep fd bat eza starship
+    zsh-autosuggestions zsh-syntax-highlighting zsh-history-substring-search
+    ollama
 )
 
 case "$GPU_CHOICE" in
@@ -345,6 +347,60 @@ fi
 genfstab -U /mnt >> /mnt/etc/fstab
 log "fstab generated"
 
+# ─── 5b. Port BalOS personality from live → installed ───────────
+# pacstrap gave us vanilla Arch + KDE. None of the BalOS customisation
+# (bal* tools, SDDM matrix theme, zsh/kitty/fastfetch dotfiles, custom
+# nftables rules, sysctl tuning, firstboot/welcome services, balai)
+# ships as a pacman package yet — it all lives in the live airootfs.
+# Copy it across so the installed system actually feels like BalOS.
+log "Porting BalOS customisation to the installed system..."
+BALOS_PATHS=(
+    /usr/bin/bal*
+    /etc/skel/.
+    /etc/zsh/zshrc.d
+    /etc/profile.d/balos-motd.sh
+    /etc/balos
+    /etc/sddm.conf.d/balos.conf
+    /etc/motd
+    /etc/issue
+    /etc/os-release
+    /etc/environment
+    /etc/nftables.conf
+    /etc/sysctl.d/99-balos.conf
+    /etc/auto-cpufreq.conf
+    /etc/gamemode.ini
+    /etc/tlp.conf
+    /etc/proxychains.conf
+    /etc/dnscrypt-proxy/dnscrypt-proxy.toml
+    /etc/unbound/unbound.conf
+    /etc/tor/torrc
+    /etc/suricata/balos.yaml
+    /etc/usbguard
+    /etc/snapper/configs/root
+    /etc/snapper/configs/home
+    /etc/conf.d/snapper
+    /etc/systemd/user/balai-serve.service
+    /etc/systemd/system/balos-firstboot.service
+    /etc/systemd/system/balos-suricata.service
+    /etc/systemd/system/balos-welcome.service
+    /etc/mkinitcpio.d/linux-zen.preset
+    /usr/share/balos
+    /usr/share/sddm/themes/balos-matrix
+    /usr/share/applications/bal*.desktop
+    /var/lib/ollama/.ollama/models
+)
+copied=0
+skipped=0
+for pattern in "${BALOS_PATHS[@]}"; do
+    # shellcheck disable=SC2086  # want glob expansion
+    for src in $pattern; do
+        if [[ -e "$src" ]]; then
+            rsync -a --relative "$src" /mnt/ 2>/dev/null && copied=$((copied+1)) || skipped=$((skipped+1))
+        fi
+    done
+done
+log "BalOS files copied: $copied (skipped: $skipped)"
+
 # Create swap file (inside @swap subvol)
 log "Creating swap file..."
 btrfs filesystem mkswapfile --size 4g --uuid clear /mnt/swap/swapfile 2>/dev/null || {
@@ -389,6 +445,30 @@ echo "root:${USER_PASS}" | chpasswd
 useradd -m -G wheel,audio,video,input,network,storage,power -s /bin/zsh ${USERNAME}
 echo "${USERNAME}:${USER_PASS}" | chpasswd
 echo "%wheel ALL=(ALL:ALL) ALL" > /etc/sudoers.d/wheel
+
+# Re-populate the user's home from /etc/skel — the BalOS skel was
+# copied in from the live ISO AFTER pacstrap, but before useradd had
+# run, so \$HOME only has whatever pacman filesystem package shipped.
+# Copy again now, ignoring files that already exist.
+if [[ -d /etc/skel ]]; then
+    cp -rn /etc/skel/. /home/${USERNAME}/ 2>/dev/null || true
+    chown -R ${USERNAME}:${USERNAME} /home/${USERNAME}
+fi
+
+# Enable BalOS boot-time services (best effort — each unit may or may
+# not be there depending on which profiles were selected).
+for svc in balos-firstboot.service balos-welcome.service balos-suricata.service ollama.service; do
+    systemctl enable "\$svc" 2>/dev/null || true
+done
+# balai user service: pre-enable in the template so it starts on first
+# KDE login. systemctl --global is the correct way to do this in chroot.
+systemctl --global enable balai-serve.service 2>/dev/null || true
+
+# Re-own the ollama model dir we copied over from the live ISO. The
+# ollama systemd service runs as user "ollama" with HOME=/var/lib/ollama.
+if id ollama &>/dev/null && [[ -d /var/lib/ollama/.ollama ]]; then
+    chown -R ollama:ollama /var/lib/ollama
+fi
 
 # mkinitcpio — add encrypt hook if LUKS
 if [[ $USE_LUKS -eq 1 ]]; then
