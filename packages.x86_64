@@ -6,6 +6,10 @@
 # ── Base System ─────────────────────────────────────────────────
 base
 base-devel
+# arch-install-scripts provides pacstrap, genfstab and arch-chroot.
+# balos-install calls all three — without it the live ISO explodes
+# with "pacstrap: command not found" the moment you run the installer.
+arch-install-scripts
 linux-zen
 linux-zen-headers
 linux-firmware
