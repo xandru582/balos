@@ -169,7 +169,9 @@ umount -R /mnt 2>/dev/null || true
 swapoff -a 2>/dev/null || true
 cryptsetup close balos_root 2>/dev/null || true
 # Close any dm-crypt mapper whose underlying device lives on $DISK.
-for m in $(ls /dev/mapper 2>/dev/null); do
+for mapper_path in /dev/mapper/*; do
+    [[ -e "$mapper_path" ]] || continue
+    m="${mapper_path##*/}"
     [[ "$m" == "control" ]] && continue
     src=$(cryptsetup status "$m" 2>/dev/null | awk '/device:/ {print $2}')
     [[ "$src" == "$DISK"* ]] && cryptsetup close "$m" 2>/dev/null || true
