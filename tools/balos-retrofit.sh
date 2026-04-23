@@ -49,37 +49,59 @@ SRC="$WORKDIR/airootfs"
 # ── Lista de rutas a portar ─────────────────────────────────────────
 PATHS=(
     usr/bin/bal*
+    usr/share/applications/bal*.desktop
+    usr/share/icons/hicolor/scalable/apps/balai.svg
+    usr/share/kio/servicemenus/balai.desktop
+    usr/share/krunner/dbusplugins/balai.desktop
+    usr/share/dbus-1/services/com.balos.BalAIRunner.service
+    usr/share/bash-completion/completions/bal
+    usr/share/zsh/site-functions/_bal
+    usr/share/zsh/site-functions/_balai
+    usr/share/man/man1/bal.1
+    usr/share/man/man1/balai.1
+    usr/share/man/man1/balai-chat.1
+    usr/share/balos
+    usr/share/sddm/themes/balos-matrix
     etc/skel/.
     etc/zsh/zshrc.d
     etc/profile.d/balos-motd.sh
-    etc/balos
-    etc/sddm.conf.d/balos.conf
     etc/motd
     etc/issue
     etc/os-release
     etc/environment
+    etc/balos
     etc/nftables.conf
-    etc/sysctl.d/99-balos.conf
-    etc/auto-cpufreq.conf
-    etc/gamemode.ini
-    etc/tlp.conf
+    etc/sudoers.d/10-balos
+    etc/security/limits.d/99-balos.conf
+    etc/polkit-1/actions/org.balos.policy
+    etc/polkit-1/rules.d/49-balos.rules
+    etc/udev/rules.d/70-balos-usb-ducky.rules
+    etc/udev/rules.d/99-balos.rules
+    etc/usbguard
     etc/proxychains.conf
     etc/dnscrypt-proxy/dnscrypt-proxy.toml
     etc/unbound/unbound.conf
     etc/tor/torrc
     etc/suricata/balos.yaml
-    etc/usbguard
-    etc/snapper/configs/root
-    etc/snapper/configs/home
-    etc/conf.d/snapper
+    etc/modprobe.d/balos.conf
+    etc/sysctl.d/99-balos.conf
+    etc/auto-cpufreq.conf
+    etc/gamemode.ini
+    etc/tlp.conf
+    etc/default/earlyoom
+    etc/pipewire/pipewire.conf.d/10-balos-gaming.conf
+    etc/systemd/zram-generator.conf
+    etc/mkinitcpio.d/linux-zen.preset
+    etc/sddm.conf.d/balos.conf
+    etc/NetworkManager/conf.d/balos.conf
     etc/systemd/user/balai-serve.service
     etc/systemd/system/balos-firstboot.service
     etc/systemd/system/balos-suricata.service
     etc/systemd/system/balos-welcome.service
-    etc/mkinitcpio.d/linux-zen.preset
-    usr/share/balos
-    usr/share/sddm/themes/balos-matrix
-    usr/share/applications/bal*.desktop
+    etc/snapper/configs/root
+    etc/snapper/configs/home
+    etc/conf.d/snapper
+    etc/pacman.d/hooks/zzz-balai-summary.hook
 )
 
 step "Copiando archivos BalOS al sistema..."
@@ -106,6 +128,14 @@ if [[ -n "$TARGET_USER" ]] && id "$TARGET_USER" &>/dev/null; then
     cp -rn /etc/skel/. "$home/" 2>/dev/null || true
     chown -R "$TARGET_USER:$TARGET_USER" "$home"
 fi
+
+# ── Recargar subsistemas que leen archivos en caliente ──────────────
+step "Recargando udev / systemd / polkit / man-db..."
+udevadm control --reload-rules 2>/dev/null || true
+udevadm trigger 2>/dev/null || true
+systemctl daemon-reload 2>/dev/null || true
+systemctl reload polkit 2>/dev/null || true
+mandb -q 2>/dev/null || true
 
 # ── Activar servicios ──────────────────────────────────────────────
 step "Activando servicios BalOS..."
