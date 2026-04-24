@@ -16,12 +16,32 @@ on:
   push:
     tags:
       - 'v*'
+  pull_request:
+    paths:
+      - 'build.sh'
+      - 'profiledef.sh'
+      - 'packages.x86_64'
+      - 'pacman.conf'
+      - 'airootfs/**'
+      - 'efiboot/**'
+      - 'grub/**'
+      - 'syslinux/**'
+      - 'kernel/**'
+      - '.github/workflows/build-iso.yml'
   workflow_dispatch:
     inputs:
       with_kernel:
         description: 'Also compile BalKernel (+45 min)'
         required: false
         default: 'false'
+
+# Every PR push should cancel the previous build on the same branch —
+# otherwise a rapid series of fix-up commits piles up 40-min runners.
+# Tag/release/cron builds use their own group so a dev push never
+# preempts them.
+concurrency:
+  group: build-iso-${{ github.event.pull_request.head.ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:

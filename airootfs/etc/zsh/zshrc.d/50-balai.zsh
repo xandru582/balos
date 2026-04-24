@@ -11,7 +11,9 @@ command -v balai &>/dev/null || return 0
 # ── `?` — one-shot query ────────────────────────────────────────
 # Usage:  ? how do I enable stealth mode
 # Usage:  ? what's my battery
-? () {
+# Quoted name + `function` keyword so zsh does NOT glob-expand `?`
+# (which triggers "no matches found: ?" under the default NOMATCH).
+function '?' {
     if [[ $# -eq 0 ]]; then
         echo "usage: ? <your question>  (e.g.  ? how do I enable stealth)"
         return 1
@@ -21,7 +23,7 @@ command -v balai &>/dev/null || return 0
 
 # ── `??` — generate + confirm + run a command ──────────────────
 # Usage:  ?? find all python files modified today
-?? () {
+function '??' {
     if [[ $# -eq 0 ]]; then
         echo "usage: ?? <intent>  (e.g.  ?? zip my Downloads folder)"
         return 1

@@ -160,8 +160,34 @@ log() { echo -e "${C}[$(date +%H:%M:%S)]${N} $*" | tee -a "$LOG"; }
 die() { echo -e "${R}${B}FATAL:${N} $*" | tee -a "$LOG"; exit 1; }
 
 # ─── 1. Partition ───────────────────────────────────────────────
+# A previous failed attempt can leave the target disk "busy" — mounts
+# under /mnt, LUKS mapper still open, swap active on a partition, etc.
+# That makes wipefs abort with "Device or resource busy". Tear all of
+# that down before we touch the disk so the install is re-runnable.
+log "Releasing $DISK (cleanup of any previous attempt)..."
+umount -R /mnt 2>/dev/null || true
+swapoff -a 2>/dev/null || true
+cryptsetup close balos_root 2>/dev/null || true
+# Close any dm-crypt mapper whose underlying device lives on $DISK.
+for mapper_path in /dev/mapper/*; do
+    [[ -e "$mapper_path" ]] || continue
+    m="${mapper_path##*/}"
+    [[ "$m" == "control" ]] && continue
+    src=$(cryptsetup status "$m" 2>/dev/null | awk '/device:/ {print $2}')
+    [[ "$src" == "$DISK"* ]] && cryptsetup close "$m" 2>/dev/null || true
+done
+# Force-unmount anything still mounted from a partition of $DISK.
+for part in $(lsblk -lnpo NAME "$DISK" 2>/dev/null | tail -n +2); do
+    for mp in $(findmnt -nr -S "$part" -o TARGET 2>/dev/null); do
+        umount -R "$mp" 2>/dev/null || true
+    done
+done
+sync
+partprobe "$DISK" 2>/dev/null || true
+sleep 1
+
 log "Partitioning $DISK ..."
-wipefs -a "$DISK"
+wipefs -a "$DISK" || die "wipefs failed — $DISK still busy; reboot and try again"
 sgdisk --zap-all "$DISK"
 sgdisk -n 1:0:+1G  -t 1:ef00 -c 1:ESP   "$DISK"
 sgdisk -n 2:0:0    -t 2:8300 -c 2:BALOS "$DISK"
@@ -203,26 +229,103 @@ umount /mnt
 
 BTRFS_OPTS="noatime,compress=zstd:2,ssd,space_cache=v2,discard=async"
 mount -o "${BTRFS_OPTS},subvol=@"          "$ROOT_DEV" /mnt
-mkdir -p /mnt/{boot,home,var,var/log,.snapshots,swap}
+mkdir -p /mnt/{boot,home,var,.snapshots,swap}
 mount -o "${BTRFS_OPTS},subvol=@home"      "$ROOT_DEV" /mnt/home
 mount -o "${BTRFS_OPTS},subvol=@var"       "$ROOT_DEV" /mnt/var
+mkdir -p /mnt/var/log
 mount -o "${BTRFS_OPTS},subvol=@log"       "$ROOT_DEV" /mnt/var/log
 mount -o "${BTRFS_OPTS},subvol=@snapshots" "$ROOT_DEV" /mnt/.snapshots
 mount -o "noatime,subvol=@swap"            "$ROOT_DEV" /mnt/swap
 mount "$P1" /mnt/boot
 
 # ─── 4. Base install ────────────────────────────────────────────
+# Without network, reflector/pacman -Syy/pacstrap all fail with ugly DNS
+# errors. Detect and guide the user through nmtui instead of letting it
+# explode 15 minutes in.
+check_net() {
+    ping -c1 -W3 1.1.1.1 >/dev/null 2>&1 || return 1
+    getent hosts archlinux.org >/dev/null 2>&1 || return 2
+    return 0
+}
+
+log "Checking network connectivity..."
+if ! check_net; then
+    rc=$?
+    while ! check_net; do
+        if [[ $rc -eq 2 ]]; then
+            MSG="\nIP connectivity works but \Z1DNS resolution fails\Zn.\n\nLaunch nmtui to fix Wi-Fi, or cancel to abort."
+        else
+            MSG="\n\Z1No internet connection detected.\Zn\n\nBalOS needs internet to download ~3 GB of packages.\n\nLaunch nmtui to connect to Wi-Fi now?"
+        fi
+        if DIALOG --title " No network " --yesno "$MSG" 12 60; then
+            clear
+            if command -v nmtui >/dev/null 2>&1; then
+                nmtui
+            elif command -v iwctl >/dev/null 2>&1; then
+                echo "Launching iwctl. Run:  station wlan0 connect <SSID>  then exit."
+                iwctl
+            else
+                die "Neither nmtui nor iwctl available. Connect network manually (ip/iw/wpa_supplicant) and rerun."
+            fi
+            sleep 3
+            rc=0
+            check_net || rc=$?
+        else
+            die "Aborted — connect a network first, then rerun: sudo balos-install"
+        fi
+    done
+fi
+log "Network OK."
+
+# The live ISO ships /etc/pacman.d/mirrorlist with every server commented
+# (that's how pacman-mirrorlist is distributed). Without refreshing it
+# here, pacstrap fails on the very first DB sync — "failed to retrieve
+# some files" — because there's literally nowhere to fetch from.
+log "Refreshing mirrorlist via reflector..."
+if command -v reflector &>/dev/null; then
+    timeout 90 reflector --latest 20 --protocol https --sort rate \
+              --save /etc/pacman.d/mirrorlist 2>&1 | tail -3 | tee -a "$LOG" || \
+        log "reflector failed — will rely on whatever mirrorlist exists"
+fi
+pacman -Syy 2>&1 | tail -5 | tee -a "$LOG" || die "pacman -Syy failed — see $LOG"
+
 log "Installing base system (pacstrap) — this takes a while..."
-BASE_PKGS=(base base-devel linux-zen linux-zen-headers linux-firmware
-    btrfs-progs efibootmgr networkmanager vim sudo
-    intel-ucode amd-ucode reflector git zsh kitty fastfetch
-    snapper snap-pac grub-btrfs inotify-tools
-    pipewire pipewire-pulse pipewire-alsa wireplumber
-    nftables tlp power-profiles-daemon powertop
-    plasma sddm konsole dolphin ark kate firefox
-    dnscrypt-proxy usbguard age wireguard-tools
-    fzf ripgrep fd bat eza starship
-)
+
+# Load the full BalOS package manifest (the SAME file mkarchiso used to
+# build this ISO) so the installed system gets the whole BalOS stack —
+# not a minimal subset. The Dockerfile stages this at build time.
+# A couple of packages are live-only and must be skipped on install:
+#   - arch-install-scripts / mkinitcpio-archiso / mkinitcpio-nfs-utils:
+#     used to build / boot the ISO, unneeded on target.
+#   - syslinux: BIOS bootloader used on the USB; target uses systemd-boot.
+MANIFEST=/usr/share/balos/packages.x86_64
+BASE_PKGS=()
+if [[ -r "$MANIFEST" ]]; then
+    while IFS= read -r raw; do
+        pkg="${raw%%#*}"
+        pkg="${pkg//[[:space:]]/}"
+        [[ -z "$pkg" ]] && continue
+        case "$pkg" in
+            arch-install-scripts|mkinitcpio-archiso|mkinitcpio-nfs-utils|syslinux) continue ;;
+        esac
+        BASE_PKGS+=("$pkg")
+    done < "$MANIFEST"
+    log "Loaded ${#BASE_PKGS[@]} packages from $MANIFEST"
+else
+    log "WARN: $MANIFEST missing — falling back to minimal KDE base"
+    BASE_PKGS=(base base-devel linux-zen linux-zen-headers linux-firmware
+        btrfs-progs efibootmgr networkmanager vim sudo
+        intel-ucode amd-ucode reflector git zsh kitty fastfetch
+        snapper snap-pac grub-btrfs inotify-tools
+        pipewire pipewire-pulse pipewire-alsa wireplumber
+        nftables tlp power-profiles-daemon powertop
+        plasma-meta sddm konsole dolphin ark kate firefox
+        dnscrypt-proxy usbguard age wireguard-tools
+        fzf ripgrep fd bat eza starship
+        zsh-autosuggestions zsh-syntax-highlighting zsh-history-substring-search
+        ollama
+    )
+fi
 
 case "$GPU_CHOICE" in
     nvidia) BASE_PKGS+=(nvidia-dkms nvidia-utils nvidia-settings libva-nvidia-driver) ;;
@@ -243,11 +346,122 @@ for p in $PROFILES; do
     esac
 done
 
-pacstrap -K /mnt "${BASE_PKGS[@]}" 2>&1 | tee -a "$LOG" >/dev/null || die "pacstrap failed"
+log "Packages to install: ${#BASE_PKGS[@]}"
+
+# Pre-flight: verify every package resolves in current repos BEFORE we
+# spend 20 minutes downloading. pacman -Sp prints one line per resolved
+# target; non-existent packages cause "error: target not found: <name>"
+# on stderr and a non-zero exit. Catch that early and tell the user
+# exactly what's missing.
+log "Checking that every package exists in the enabled repos..."
+if ! MISSING=$(pacman -Sp --print-format '%n' "${BASE_PKGS[@]}" 2>&1 >/dev/null); then
+    echo "${R}${B}Preflight failed — these packages do not resolve:${N}" | tee -a "$LOG"
+    echo "$MISSING" | tee -a "$LOG"
+    die "Fix the package list in $0 or add the missing repo."
+fi
+
+if ! pacstrap -K /mnt "${BASE_PKGS[@]}" 2>&1 | tee -a "$LOG"; then
+    echo "" | tee -a "$LOG"
+    echo "${R}${B}── last 40 lines of /tmp/balos-install.log ──${N}" | tee -a "$LOG"
+    tail -40 "$LOG"
+    die "pacstrap failed (full log at /tmp/balos-install.log)"
+fi
 
 # ─── 5. fstab ───────────────────────────────────────────────────
 genfstab -U /mnt >> /mnt/etc/fstab
 log "fstab generated"
+
+# ─── 5b. Port BalOS personality from live → installed ───────────
+# pacstrap gave us vanilla Arch + KDE. None of the BalOS customisation
+# (bal* tools, SDDM matrix theme, zsh/kitty/fastfetch dotfiles, custom
+# nftables rules, sysctl tuning, firstboot/welcome services, balai)
+# ships as a pacman package yet — it all lives in the live airootfs.
+# Copy it across so the installed system actually feels like BalOS.
+log "Porting BalOS customisation to the installed system..."
+BALOS_PATHS=(
+    # bal* binaries + base launcher desktop files
+    /usr/bin/bal*
+    /usr/share/applications/bal*.desktop
+    /usr/share/icons/hicolor/scalable/apps/balai.svg
+    /usr/share/kio/servicemenus/balai.desktop
+    /usr/share/krunner/dbusplugins/balai.desktop
+    /usr/share/dbus-1/services/com.balos.BalAIRunner.service
+    /usr/share/bash-completion/completions/bal
+    /usr/share/zsh/site-functions/_bal
+    /usr/share/zsh/site-functions/_balai
+    /usr/share/man/man1/bal.1
+    /usr/share/man/man1/balai.1
+    /usr/share/man/man1/balai-chat.1
+    /usr/share/balos
+    /usr/share/sddm/themes/balos-matrix
+    # user-facing dotfiles / shell
+    /etc/skel/.
+    /etc/zsh/zshrc.d
+    /etc/profile.d/balos-motd.sh
+    /etc/motd
+    /etc/issue
+    /etc/os-release
+    /etc/environment
+    # security stack
+    /etc/balos
+    /etc/nftables.conf
+    /etc/sudoers.d/10-balos
+    /etc/security/limits.d/99-balos.conf
+    /etc/polkit-1/actions/org.balos.policy
+    /etc/polkit-1/rules.d/49-balos.rules
+    /etc/udev/rules.d/70-balos-usb-ducky.rules
+    /etc/udev/rules.d/99-balos.rules
+    /etc/usbguard
+    /etc/proxychains.conf
+    /etc/dnscrypt-proxy/dnscrypt-proxy.toml
+    /etc/unbound/unbound.conf
+    /etc/tor/torrc
+    /etc/suricata/balos.yaml
+    # kernel / tuning / gaming
+    /etc/modprobe.d/balos.conf
+    /etc/sysctl.d/99-balos.conf
+    /etc/auto-cpufreq.conf
+    /etc/gamemode.ini
+    /etc/tlp.conf
+    /etc/default/earlyoom
+    /etc/pipewire/pipewire.conf.d/10-balos-gaming.conf
+    /etc/systemd/zram-generator.conf
+    /etc/mkinitcpio.d/linux-zen.preset
+    # services + display manager
+    /etc/sddm.conf.d/balos.conf
+    /etc/NetworkManager/conf.d/balos.conf
+    /etc/systemd/user/balai-serve.service
+    /etc/systemd/system/balos-firstboot.service
+    /etc/systemd/system/balos-suricata.service
+    /etc/systemd/system/balos-welcome.service
+    # snapper + pacman hook
+    /etc/snapper/configs/root
+    /etc/snapper/configs/home
+    /etc/conf.d/snapper
+    /etc/pacman.d/hooks/zzz-balai-summary.hook
+    # balai model pre-baked
+    /var/lib/ollama/.ollama/models
+    # local [balos] repo (auto-cpufreq, proton-ge, etc.) — without this
+    # the installed /etc/pacman.conf has a dangling file:///balos-repo
+    # reference and every `pacman -Sy` prints errors.
+    /balos-repo
+    # pacman config so the installed system can pacman -Syu against
+    # [core] [extra] [multilib] [blackarch] [balos] exactly like the
+    # live did. The balos-repo copy above makes file:/// work.
+    /etc/pacman.conf
+    /etc/pacman.d/blackarch-mirrorlist
+)
+copied=0
+skipped=0
+for pattern in "${BALOS_PATHS[@]}"; do
+    # shellcheck disable=SC2086  # want glob expansion
+    for src in $pattern; do
+        if [[ -e "$src" ]]; then
+            rsync -a --relative "$src" /mnt/ 2>/dev/null && copied=$((copied+1)) || skipped=$((skipped+1))
+        fi
+    done
+done
+log "BalOS files copied: $copied (skipped: $skipped)"
 
 # Create swap file (inside @swap subvol)
 log "Creating swap file..."
@@ -294,6 +508,30 @@ useradd -m -G wheel,audio,video,input,network,storage,power -s /bin/zsh ${USERNA
 echo "${USERNAME}:${USER_PASS}" | chpasswd
 echo "%wheel ALL=(ALL:ALL) ALL" > /etc/sudoers.d/wheel
 
+# Re-populate the user's home from /etc/skel — the BalOS skel was
+# copied in from the live ISO AFTER pacstrap, but before useradd had
+# run, so \$HOME only has whatever pacman filesystem package shipped.
+# Copy again now, ignoring files that already exist.
+if [[ -d /etc/skel ]]; then
+    cp -rn /etc/skel/. /home/${USERNAME}/ 2>/dev/null || true
+    chown -R ${USERNAME}:${USERNAME} /home/${USERNAME}
+fi
+
+# Enable BalOS boot-time services (best effort — each unit may or may
+# not be there depending on which profiles were selected).
+for svc in balos-firstboot.service balos-welcome.service balos-suricata.service ollama.service; do
+    systemctl enable "\$svc" 2>/dev/null || true
+done
+# balai user service: pre-enable in the template so it starts on first
+# KDE login. systemctl --global is the correct way to do this in chroot.
+systemctl --global enable balai-serve.service 2>/dev/null || true
+
+# Re-own the ollama model dir we copied over from the live ISO. The
+# ollama systemd service runs as user "ollama" with HOME=/var/lib/ollama.
+if id ollama &>/dev/null && [[ -d /var/lib/ollama/.ollama ]]; then
+    chown -R ollama:ollama /var/lib/ollama
+fi
+
 # mkinitcpio — add encrypt hook if LUKS
 if [[ $USE_LUKS -eq 1 ]]; then
     sed -i 's/^HOOKS=.*/HOOKS=(base udev autodetect microcode modconf keyboard keymap consolefont block encrypt btrfs filesystems fsck)/' /etc/mkinitcpio.conf
@@ -323,7 +561,12 @@ editor no
 BOOT
 
 if [[ $USE_LUKS -eq 1 ]]; then
-    CMDLINE="rd.luks.name=\${LUKS_UUID}=balos_root root=/dev/mapper/balos_root rootflags=subvol=@ rw quiet splash mitigations=auto mem_sleep_default=deep nvme.noacpi=1"
+    # The legacy "encrypt" mkinitcpio hook (enabled above) expects
+    # cryptdevice=UUID=LUKS:NAME on the kernel cmdline. The newer
+    # rd.luks.name= syntax is only understood by the "sd-encrypt"
+    # hook. Mixing them leaves the root mapper never opened and the
+    # system drops straight into the initramfs emergency shell.
+    CMDLINE="cryptdevice=UUID=\${LUKS_UUID}:balos_root root=/dev/mapper/balos_root rootflags=subvol=@ rw quiet splash mitigations=auto mem_sleep_default=deep nvme.noacpi=1"
 else
     CMDLINE="root=UUID=\${ROOT_UUID} rootflags=subvol=@ rw quiet splash mitigations=auto mem_sleep_default=deep nvme.noacpi=1"
 fi

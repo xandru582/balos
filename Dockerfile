@@ -63,9 +63,23 @@ RUN mkdir -p /output /tmp/balos-work
 # root (kernel/) so makepkg can also consume it outside the ISO. Prior
 # to this fix, the kernel recipe was silently missing from every ISO
 # because `cp -r /root/kernel/* ...` had `|| true` on the end.
+#
+# Also stage the extra pacman repos used at install time:
+#   - /balos-repo        → custom AUR-compiled packages (auto-cpufreq, proton-ge, …)
+#   - blackarch-mirrorlist → needed so the live ISO's pacman can sync [blackarch]
+#   - pacman.conf        → copied verbatim to /etc/pacman.conf so `balos-install`
+#                          can pacstrap metasploit/AUR-built tools against the
+#                          same repo set used to build the ISO.
+# Without these, the live ISO has only core/extra and pacstrap fails with
+# "target not found: metasploit" (and similar for every AUR-compiled pkg).
 CMD ["bash", "-c", "\
     set -e; \
     mkdir -p /build/profile/airootfs/root/kernel; \
     cp -r /build/profile/kernel/. /build/profile/airootfs/root/kernel/; \
+    mkdir -p /build/profile/airootfs/etc/pacman.d /build/profile/airootfs/balos-repo /build/profile/airootfs/usr/share/balos; \
+    cp /etc/pacman.d/blackarch-mirrorlist /build/profile/airootfs/etc/pacman.d/blackarch-mirrorlist; \
+    cp -a /balos-repo/. /build/profile/airootfs/balos-repo/; \
+    cp /build/profile/pacman.conf /build/profile/airootfs/etc/pacman.conf; \
+    cp /build/profile/packages.x86_64 /build/profile/airootfs/usr/share/balos/packages.x86_64; \
     mkarchiso -v -w /tmp/balos-work -o /output /build/profile/; \
     echo '=== BALOS BUILD SUCCESS ==='"]
